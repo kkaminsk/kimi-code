@@ -29,7 +29,8 @@ import {
 } from '#/features/externalHooks/configSection';
 import { IAgentExternalHooksService } from '#/features/externalHooks/agent/agentExternalHooks';
 import { AgentExternalHooksService } from '#/features/externalHooks/agent/agentExternalHooksService';
-import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
+import { IAgentFullCompactionService, type FullCompactionTask } from '#/agent/fullCompaction/fullCompaction';
+import type { CompactionResult } from '#/agent/fullCompaction/types';
 import {
   IAgentScopeContext,
   makeAgentScopeContext,
@@ -47,6 +48,7 @@ import {
 } from '#/agent/toolApproval/toolApprovalService';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunner';
+import type { HookResult } from '#/features/externalHooks/internal/types';
 import { ExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunnerService';
 import { makeHookRunner } from './runner-stub';
 import type { AgentTaskInfo } from '#/agent/task/task';
@@ -68,6 +70,7 @@ import {
 import { createHooks, OrderedHookSlot } from '#/hooks';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
+import { ILogService, type ILogger, type LogPayload } from '#/_base/log/log';
 import {
   type AgentTaskHooks,
   type AgentTaskStopHookContext,
@@ -256,6 +259,27 @@ function stubSessionLifecycle() {
   };
 }
 
+const logWarnings: { readonly message: string; readonly payload?: LogPayload }[] = [];
+
+function stubLogService(): ILogService {
+  const logger: ILogger = {
+    error: () => {},
+    warn: (message: string, payload?: LogPayload) => {
+      logWarnings.push({ message, payload });
+    },
+    info: () => {},
+    debug: () => {},
+    child: () => logger,
+  };
+  return {
+    _serviceBrand: undefined,
+    level: 'off',
+    setLevel: () => {},
+    flush: async () => {},
+    ...logger,
+  };
+}
+
 function registerAgentEventBus(reg: ServiceRegistration): void {
   reg.defineInstance(
     IAgentScopeContext,
@@ -267,6 +291,7 @@ function registerAgentEventBus(reg: ServiceRegistration): void {
   );
   reg.define(ISessionEventBus, EventBusService);
   reg.define(IEventBus, AgentEventBusView);
+  reg.defineInstance(ILogService, stubLogService());
 }
 
 function activateAgentEventBus(ix: TestInstantiationService): IEventBus {
@@ -1447,6 +1472,244 @@ describe('IExternalHooksRunnerService integration', () => {
       ix?.dispose();
       disposables.dispose();
       vi.useRealTimers();
+    }
+  });
+});
+
+describe('PreCompact prune contract', () => {
+  interface PreCompactHarness {
+    readonly ix: TestInstantiationService;
+    readonly context: ReturnType<typeof stubContextMemory>;
+    readonly triggerCalls: { readonly event: string; readonly inputData: Record<string, unknown> }[];
+    setTriggerResults(results: readonly HookResult[]): void;
+  }
+
+  function installPreCompactHarness(disposables: DisposableStore): PreCompactHarness {
+    logWarnings.length = 0;
+    const context = stubContextMemory();
+    const triggerCalls: PreCompactHarness['triggerCalls'] = [];
+    let triggerResults: readonly HookResult[] = [];
+    const ix = createServices(disposables, {
+      strict: true,
+      additionalServices: (reg) => {
+        registerStateServices(reg);
+        registerTestAgentWireServices(reg, 'wire/external-hooks');
+        reg.defineInstance(IBootstrapService, stubBootstrap());
+        reg.defineInstance(ISessionContext, stubSessionContext());
+        reg.defineInstance(ISessionMetadata, stubSessionMetadata());
+        reg.definePartialInstance(IConfigService, {});
+        reg.definePartialInstance(IPluginService, {});
+        reg.defineInstance(IAgentContextMemoryService, context);
+        reg.defineInstance(IAgentLoopService, stubLoopWithHooks());
+        registerAgentEventBus(reg);
+        reg.defineInstance(IAgentToolExecutorService, stubToolExecutor());
+        reg.definePartialInstance(IAgentPermissionGate, {});
+        reg.definePartialInstance(IAgentFullCompactionService, {
+          hooks: createHooks(['onWillCompact']),
+        });
+        reg.definePartialInstance(IAgentTaskService, {});
+      },
+    });
+    activateAgentEventBus(ix);
+    ix.set(
+      IExternalHooksRunnerService,
+      stubHookRunner({
+        trigger: async (event: string, args: { inputData: Record<string, unknown> }) => {
+          triggerCalls.push({ event, inputData: args.inputData });
+          return [...triggerResults];
+        },
+      }),
+    );
+    ix.set(IAgentExternalHooksService, new SyncDescriptor(AgentExternalHooksService));
+    ix.get(IAgentExternalHooksService);
+    return {
+      ix,
+      context,
+      triggerCalls,
+      setTriggerResults: (results) => {
+        triggerResults = results;
+      },
+    };
+  }
+
+  function seedExchanges(context: ReturnType<typeof stubContextMemory>): void {
+    context.append(
+      { role: 'user', content: [{ type: 'text', text: 'read these files' }], toolCalls: [] },
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'reading now' }],
+        toolCalls: [
+          { type: 'function', id: 'c1', name: 'Read', arguments: '{"path":"a"}' },
+          { type: 'function', id: 'c2', name: 'Read', arguments: '{"path":"b"}' },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [{ type: 'text', text: 'contents a' }],
+        toolCalls: [],
+        toolCallId: 'c1',
+      },
+      {
+        role: 'tool',
+        content: [{ type: 'text', text: 'contents b' }],
+        toolCalls: [],
+        toolCallId: 'c2',
+      },
+    );
+  }
+
+  function makeCompactionTask(instruction?: string): FullCompactionTask {
+    return {
+      abortController: new AbortController(),
+      promise: Promise.resolve({} as CompactionResult),
+      trigger: 'manual',
+      tokenCount: 42,
+      instruction,
+      maxContextTokens: 200_000,
+    };
+  }
+
+  it('extends the PreCompact payload with agent id, max context tokens, instruction, and messages', async () => {
+    const disposables = new DisposableStore();
+    const harness = installPreCompactHarness(disposables);
+    try {
+      seedExchanges(harness.context);
+      const task = makeCompactionTask('keep only the plan');
+
+      await harness.ix.get(IAgentFullCompactionService).hooks.onWillCompact.run(task);
+
+      expect(harness.triggerCalls).toHaveLength(1);
+      expect(harness.triggerCalls[0]?.event).toBe('PreCompact');
+      const inputData = harness.triggerCalls[0]?.inputData ?? {};
+      expect(inputData).toEqual(
+        expect.objectContaining({
+          trigger: 'manual',
+          tokenCount: 42,
+          agent_id: 'main',
+          max_context_tokens: 200_000,
+          instruction: 'keep only the plan',
+        }),
+      );
+      const messages = inputData['messages'] as Array<Record<string, unknown>>;
+      expect(messages).toHaveLength(4);
+      expect(messages[1]?.['tool_calls']).toEqual([
+        { id: 'c1', name: 'Read', arguments: '{"path":"a"}' },
+        { id: 'c2', name: 'Read', arguments: '{"path":"b"}' },
+      ]);
+      expect(messages[2]).toEqual(
+        expect.objectContaining({ role: 'tool', tool_call_id: 'c1', text: 'contents a' }),
+      );
+      expect(task.pruneDecision).toBeUndefined();
+    } finally {
+      harness.ix.dispose();
+      disposables.dispose();
+    }
+  });
+
+  it('omits the instruction field when none was given', async () => {
+    const disposables = new DisposableStore();
+    const harness = installPreCompactHarness(disposables);
+    try {
+      seedExchanges(harness.context);
+      const task = makeCompactionTask();
+
+      await harness.ix.get(IAgentFullCompactionService).hooks.onWillCompact.run(task);
+
+      const inputData = harness.triggerCalls[0]?.inputData ?? {};
+      expect(inputData.instruction).toBeUndefined();
+    } finally {
+      harness.ix.dispose();
+      disposables.dispose();
+    }
+  });
+
+  it('applies a valid prune decision to the compaction task', async () => {
+    const disposables = new DisposableStore();
+    const harness = installPreCompactHarness(disposables);
+    try {
+      seedExchanges(harness.context);
+      harness.setTriggerResults([
+        {
+          action: 'allow',
+          pruneDecision: {
+            dropCalls: ['c1'],
+            truncateResults: [{ toolCallId: 'c2', headChars: 300 }],
+            note: 'kept 3/4',
+          },
+        },
+      ]);
+      const task = makeCompactionTask();
+
+      await harness.ix.get(IAgentFullCompactionService).hooks.onWillCompact.run(task);
+
+      expect(task.pruneDecision).toEqual({
+        dropCalls: ['c1'],
+        truncateResults: [{ toolCallId: 'c2', headChars: 300 }],
+        note: 'kept 3/4',
+      });
+    } finally {
+      harness.ix.dispose();
+      disposables.dispose();
+    }
+  });
+
+  it('rejects an invalid decision, logs the reason, and leaves the task unset', async () => {
+    const disposables = new DisposableStore();
+    const harness = installPreCompactHarness(disposables);
+    try {
+      seedExchanges(harness.context);
+      harness.setTriggerResults([
+        { action: 'allow', pruneDecision: { dropCalls: ['missing'], truncateResults: [] } },
+      ]);
+      const task = makeCompactionTask();
+
+      await harness.ix.get(IAgentFullCompactionService).hooks.onWillCompact.run(task);
+
+      expect(task.pruneDecision).toBeUndefined();
+      expect(logWarnings).toEqual([
+        expect.objectContaining({ message: 'precompact prune decision rejected' }),
+      ]);
+      expect(logWarnings[0]?.payload).toEqual(
+        expect.objectContaining({ reason: expect.stringContaining('unknown tool call id') }),
+      );
+    } finally {
+      harness.ix.dispose();
+      disposables.dispose();
+    }
+  });
+
+  it('uses the first valid decision and logs later ones as ignored', async () => {
+    const disposables = new DisposableStore();
+    const harness = installPreCompactHarness(disposables);
+    try {
+      seedExchanges(harness.context);
+      harness.setTriggerResults([
+        { action: 'allow', pruneDecision: { dropCalls: ['missing'], truncateResults: [] } },
+        {
+          action: 'allow',
+          pruneDecision: { dropCalls: ['c1'], truncateResults: [], note: 'first' },
+        },
+        {
+          action: 'allow',
+          pruneDecision: { dropCalls: ['c2'], truncateResults: [], note: 'second' },
+        },
+      ]);
+      const task = makeCompactionTask();
+
+      await harness.ix.get(IAgentFullCompactionService).hooks.onWillCompact.run(task);
+
+      expect(task.pruneDecision).toEqual({
+        dropCalls: ['c1'],
+        truncateResults: [],
+        note: 'first',
+      });
+      expect(logWarnings.map((entry) => entry.message)).toEqual([
+        'precompact prune decision rejected',
+        'precompact prune decision ignored',
+      ]);
+    } finally {
+      harness.ix.dispose();
+      disposables.dispose();
     }
   });
 });

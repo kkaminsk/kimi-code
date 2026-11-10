@@ -124,9 +124,51 @@ Hook 命令的工作目录是当前会话的项目目录。
 | `TaskStarted` | 任务类型（`agent`、`process` 或 `question`） | — | 后台任务启动时触发；payload 含 `task_id`、`description`、`detached` |
 | `StopFailure` | 错误类型 | — | 本轮因错误失败后触发 |
 | `Interrupt` | 空字符串 | — | 用户中断本轮时触发（如按 Esc）；超时等程序性中断不触发，此时 `Stop` 由本事件替代；payload 含 `reason` |
-| `PreCompact` | `manual` 或 `auto` | — | 上下文压缩开始前触发；返回值被完全忽略 |
+| `PreCompact` | `manual` 或 `auto` | — | 上下文压缩开始前触发；可以返回 prune 决策（见 [PreCompact prune 决策](#precompact-prune-决策)） |
 | `PostCompact` | `manual` 或 `auto` | — | 上下文压缩完成后触发 |
 | `Notification` | 通知类型（如 `task.completed`） | — | 后台任务状态变化时触发 |
+
+### PreCompact prune 决策
+
+`PreCompact` 是唯一仍能影响主流程的观察型事件：它会收到完整对话历史，并可以回答一个 **prune 决策** —— 一串要丢弃的工具调用和要截断的工具结果，在压缩决定是否还需要摘要之前生效。事件的其他行为（fail-open、超时、工作目录）保持不变。
+
+payload 在基础字段之上新增以下字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `trigger` | `manual` 或 `auto` |
+| `token_count` | 当前上下文的估算 token 数 |
+| `agent_id` | 即将被压缩的 agent 的 id |
+| `max_context_tokens` | 当前模型生效的上下文窗口 |
+| `instruction` | 传给 `/compact` 的自由文本；未提供时该字段不存在 |
+| `messages` | 当前上下文，最早的消息在前；每条消息一个条目 |
+
+`messages` 中的每个条目包含 `index`（在上下文中的位置）、`role`（`system`、`user`、`assistant` 或 `tool`）、`origin_kind`（消息来源，存在时）、`text`（仅文本部分，thinking 部分被排除，超过 200 000 字符时截断并附省略说明）、`tool_calls`（assistant 消息： `{ id, name, arguments }` 数组，`arguments` 为原始字符串）、`tool_call_id`（tool 消息）、`is_error` 和 `chars`（`text` 的长度）。
+
+退出码为 0 时，hook 可以通过 stdout 打印一个 JSON 决策：
+
+```json
+{
+  "hookSpecificOutput": {
+    "compactionDecision": "prune",
+    "prune": {
+      "dropCalls": ["call_1", "call_2"],
+      "truncateResults": [{ "toolCallId": "call_3", "headChars": 300 }],
+      "note": "kept 41/58 messages"
+    }
+  }
+}
+```
+
+- `dropCalls`：要从上下文中连同其结果一起移除的工具调用 id。
+- `truncateResults`：截断到前 `headChars` 个字符的工具结果，并附加省略说明。
+- `note`：可选的一行说明，展示给用户。
+
+只有当每个 id 都存在于历史中、其工具结果已经返回、没有 id 同时出现在两个列表中、且 `headChars` 是非负整数时，决策才会被采纳。无效决策会被忽略 —— 原因会写入日志 —— 压缩按内置行为继续。多个 `PreCompact` hook 同时匹配时，以配置顺序为准，第一个有效决策胜出，其余被忽略。空 stdout、`compactionDecision: "proceed"`、格式错误的 JSON 或退出码 2 都表示"不 prune"：压缩与不安装该 hook 时完全一致。
+
+::: warning 注意
+prune 永远不会改写用户或 assistant 的文本，只会移除工具调用、截断工具结果。模型需要数据时可以重新运行被 prune 的工具。
+:::
 
 ## 示例：阻断危险 Shell 命令
 

@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 import { type IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
 
-import type { HookResult } from './types';
+import type { HookResult, RawPruneDecision } from './types';
 
 export interface RunHookOptions {
   readonly timeout: number;
@@ -40,6 +40,15 @@ const OptionalStringSchema = z.preprocess(
   },
   z.string().optional(),
 );
+const HookPruneTruncateSchema = z.looseObject({
+  toolCallId: z.string(),
+  headChars: z.number().int().nonnegative(),
+});
+const HookPruneSchema = z.looseObject({
+  dropCalls: z.array(z.string()),
+  truncateResults: z.array(HookPruneTruncateSchema),
+  note: z.string().optional(),
+});
 const HookSpecificOutputSchema = z.preprocess(
   (value) => (isRecord(value) ? value : undefined),
   z
@@ -47,6 +56,8 @@ const HookSpecificOutputSchema = z.preprocess(
       message: OptionalStringSchema,
       permissionDecision: z.unknown().optional(),
       permissionDecisionReason: z.unknown().optional(),
+      compactionDecision: z.enum(['prune', 'proceed']).optional(),
+      prune: HookPruneSchema.optional(),
     })
     .optional(),
 );
@@ -160,6 +171,7 @@ function resultFromExitCode(exitCode: number, stdout: string, stderr: string): H
       stderr,
       exitCode,
       structuredOutput: structured.structuredOutput,
+      pruneDecision: structured.pruneDecision,
     };
   }
 
@@ -169,12 +181,21 @@ function resultFromExitCode(exitCode: number, stdout: string, stderr: string): H
     stderr,
     exitCode,
     structuredOutput: structured?.structuredOutput,
+    pruneDecision: structured?.pruneDecision,
   });
 }
 
 function structuredOutput(
   stdout: string,
-): { action?: 'block'; reason?: string; message?: string; structuredOutput: true } | undefined {
+):
+  | {
+      action?: 'block';
+      reason?: string;
+      message?: string;
+      structuredOutput: true;
+      pruneDecision?: RawPruneDecision;
+    }
+  | undefined {
   const text = stdout.trim();
   if (text.length === 0) return undefined;
 
@@ -184,9 +205,14 @@ function structuredOutput(
     if (!output.success) return undefined;
 
     const { message, hookSpecificOutput } = output.data;
+    const pruneDecision =
+      hookSpecificOutput?.compactionDecision === 'prune'
+        ? hookSpecificOutput.prune
+        : undefined;
     const result = {
       message: message ?? hookSpecificOutput?.message,
       structuredOutput: true as const,
+      pruneDecision,
     };
     if (hookSpecificOutput?.permissionDecision !== 'deny') {
       return result;
@@ -199,6 +225,7 @@ function structuredOutput(
           ? hookSpecificOutput.permissionDecisionReason
           : undefined,
       structuredOutput: true as const,
+      pruneDecision,
     };
   } catch {
     return undefined;
@@ -213,6 +240,7 @@ function allowResult(input: {
   readonly timedOut?: boolean;
   readonly errored?: boolean;
   readonly structuredOutput?: boolean;
+  readonly pruneDecision?: RawPruneDecision;
 }): HookResult {
   return {
     action: 'allow',
@@ -223,6 +251,7 @@ function allowResult(input: {
     timedOut: input.timedOut,
     errored: input.errored,
     structuredOutput: input.structuredOutput,
+    pruneDecision: input.pruneDecision,
   };
 }
 

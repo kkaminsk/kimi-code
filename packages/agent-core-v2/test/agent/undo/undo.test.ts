@@ -194,6 +194,7 @@ describe('AgentConversationUndoService', () => {
       promise: new Promise<never>(() => {}),
       trigger: 'manual',
       tokenCount: 2,
+      maxContextTokens: 1024,
     });
 
     try {

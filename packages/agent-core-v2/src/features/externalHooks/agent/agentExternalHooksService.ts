@@ -33,10 +33,17 @@ import { toKimiErrorPayload } from '#/errors';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IEventDispatcher } from '#/state/eventDispatcher';
+import { ILogService } from '#/_base/log/log';
 
 import { IAgentExternalHooksService } from './agentExternalHooks';
 import { IExternalHooksRunnerService } from '../app/externalHooksRunner';
-import type { HookMatcherValue } from '../internal/types';
+import type {
+  HookMatcherValue,
+  HookResult as HookRunResult,
+  ValidatedPruneDecision,
+} from '../internal/types';
+import { toHookMessages, type HookMessage } from '../internal/hookMessages';
+import { validatePruneDecision } from '../internal/pruneDecision';
 import {
   renderUserPromptHookBlockResult,
   renderUserPromptHookResult,
@@ -78,6 +85,7 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
     @IAgentStateService private readonly states: IAgentStateService,
     @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
+    @ILogService private readonly log: ILogService,
   ) {
     super();
     this.states.contributeState(externalHooksStopHookContinuationUsedKey);
@@ -422,16 +430,49 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
   private async runPreCompact(ctx: FullCompactionTask): Promise<void> {
     const signal = ctx.abortController.signal;
     signal.throwIfAborted();
-    await this.runner.trigger('PreCompact', {
+    const messages = toHookMessages(this.context.get());
+    const results = await this.runner.trigger('PreCompact', {
       matcherValue: ctx.trigger,
       signal,
       sessionId: this.sessionContext.sessionId,
       inputData: this.withSessionFacts({
         trigger: ctx.trigger,
         tokenCount: ctx.tokenCount,
+        agent_id: this.scopeContext.agentId,
+        max_context_tokens: ctx.maxContextTokens,
+        instruction: ctx.instruction,
+        messages,
       }),
     });
     signal.throwIfAborted();
+    const decision = this.pickPruneDecision(results, messages);
+    if (decision !== undefined) {
+      ctx.pruneDecision = decision;
+    }
+  }
+
+  private pickPruneDecision(
+    results: readonly HookRunResult[],
+    messages: readonly HookMessage[],
+  ): ValidatedPruneDecision | undefined {
+    let picked: ValidatedPruneDecision | undefined;
+    for (const result of results) {
+      const raw = result.pruneDecision;
+      if (raw === undefined) continue;
+      const validation = validatePruneDecision(raw, messages);
+      if (!validation.ok) {
+        this.log.warn('precompact prune decision rejected', { reason: validation.reason });
+        continue;
+      }
+      if (picked !== undefined) {
+        this.log.warn('precompact prune decision ignored', {
+          reason: 'an earlier hook already returned a valid prune decision',
+        });
+        continue;
+      }
+      picked = validation.decision;
+    }
+    return picked;
   }
 
   private notifyPostCompact(ctx: FullCompactionTask, result: CompactionResult): void {

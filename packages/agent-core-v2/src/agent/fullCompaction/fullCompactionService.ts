@@ -353,6 +353,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       const active = this.createActiveCompaction(
         data.source,
         tokenCount,
+        data.instruction,
+        this.getEffectiveMaxContextTokens(),
         data.source === 'auto' ? this.activeTurnId : undefined,
         quiescence,
       );
@@ -397,6 +399,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   private createActiveCompaction(
     trigger: CompactionBeginData['source'],
     tokenCount: number,
+    instruction: string | undefined,
+    maxContextTokens: number,
     originTurnId: number | undefined,
     quiescence: IDisposable | undefined,
   ): {
@@ -417,6 +421,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         promise,
         trigger,
         tokenCount,
+        instruction,
+        maxContextTokens,
         originTurnId,
         quiescence,
         get traceId() {

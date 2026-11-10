@@ -7,7 +7,7 @@ import { HostProcessService } from '#/os/backends/node-local/hostProcessService'
 const hostProcess = new HostProcessService();
 
 function nodeCommand(source: string): string {
-  return `node -e ${JSON.stringify(source.replace(/\s*\n\s*/g, ' '))}`;
+  return `node -e ${JSON.stringify(source.replaceAll(/\s*\n\s*/g, ' '))}`;
 }
 
 describe('runHook process runner', () => {
@@ -142,6 +142,75 @@ describe('runHook process runner', () => {
 
     expect(result.action).toBe('block');
     expect(result.reason).toBe('use rg');
+  });
+
+  it('parses a structured prune decision into the hook result', async () => {
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(
+        'process.stdout.write(JSON.stringify({ hookSpecificOutput: { compactionDecision: "prune", prune: { dropCalls: ["c1"], truncateResults: [{ toolCallId: "c2", headChars: 300 }], note: "kept 3/5" } } }));',
+      ),
+      {},
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('allow');
+    expect(result.structuredOutput).toBe(true);
+    expect(result.pruneDecision).toEqual({
+      dropCalls: ['c1'],
+      truncateResults: [{ toolCallId: 'c2', headChars: 300 }],
+      note: 'kept 3/5',
+    });
+  });
+
+  it('rejects a prune decision with a negative headChars', async () => {
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(
+        'process.stdout.write(JSON.stringify({ hookSpecificOutput: { compactionDecision: "prune", prune: { dropCalls: ["c1"], truncateResults: [{ toolCallId: "c2", headChars: -1 }] } } }));',
+      ),
+      {},
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('allow');
+    expect(result.pruneDecision).toBeUndefined();
+  });
+
+  it('treats an explicit proceed decision as no prune decision', async () => {
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(
+        'process.stdout.write(JSON.stringify({ hookSpecificOutput: { compactionDecision: "proceed", message: "nothing worth pruning" } }));',
+      ),
+      {},
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('allow');
+    expect(result.pruneDecision).toBeUndefined();
+  });
+
+  it('yields no prune decision on exit code 2 or non-JSON stdout', async () => {
+    const blocked = await runHook(
+      hostProcess,
+      nodeCommand(
+        'process.stdout.write(JSON.stringify({ hookSpecificOutput: { compactionDecision: "prune", prune: { dropCalls: ["c1"], truncateResults: [] } } })); process.exit(2);',
+      ),
+      {},
+      { timeout: 5 },
+    );
+    expect(blocked.action).toBe('block');
+    expect(blocked.pruneDecision).toBeUndefined();
+
+    const plain = await runHook(
+      hostProcess,
+      nodeCommand('process.stdout.write("not json");'),
+      {},
+      { timeout: 5 },
+    );
+    expect(plain.action).toBe('allow');
+    expect(plain.pruneDecision).toBeUndefined();
   });
 
   it('writes the input payload to the hook process stdin as JSON', async () => {

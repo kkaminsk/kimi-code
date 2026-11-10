@@ -34,6 +34,23 @@ export interface HookDef {
   readonly env?: Record<string, string>;
 }
 
+export interface RawPruneTruncate {
+  readonly toolCallId: string;
+  readonly headChars: number;
+}
+
+export interface RawPruneDecision {
+  readonly dropCalls: readonly string[];
+  readonly truncateResults: readonly RawPruneTruncate[];
+  readonly note?: string;
+}
+
+export interface ValidatedPruneDecision {
+  readonly dropCalls: readonly string[];
+  readonly truncateResults: readonly RawPruneTruncate[];
+  readonly note?: string;
+}
+
 export interface HookResult {
   readonly action: 'allow' | 'block';
   readonly message?: string;
@@ -44,6 +61,7 @@ export interface HookResult {
   readonly timedOut?: boolean;
   readonly errored?: boolean;
   readonly structuredOutput?: boolean;
+  readonly pruneDecision?: RawPruneDecision;
 }
 
 export interface HookBlockDecision {

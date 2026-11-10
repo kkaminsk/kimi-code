@@ -124,9 +124,51 @@ Only **blockable events** (`PreToolUse`, `Stop`, `UserPromptSubmit`) have return
 | `TaskStarted` | Task kind (`agent`, `process`, or `question`) | — | Triggered when a background task starts; payload includes `task_id`, `description`, `detached` |
 | `StopFailure` | Error type | — | Triggered after the current turn fails due to an error |
 | `Interrupt` | Empty string | — | Triggered when the user interrupts the turn (e.g. pressing Esc); not fired for timeouts or programmatic aborts; fires in place of `Stop`; payload includes `reason` |
-| `PreCompact` | `manual` or `auto` | — | Triggered before context compaction begins; return values are completely ignored |
+| `PreCompact` | `manual` or `auto` | — | Triggered before context compaction begins; may return a prune decision (see [PreCompact prune decisions](#precompact-prune-decisions)) |
 | `PostCompact` | `manual` or `auto` | — | Triggered after context compaction completes |
 | `Notification` | Notification type (e.g. `task.completed`) | — | Triggered when a background task status changes |
+
+### PreCompact prune decisions
+
+`PreCompact` is the one observation-only event that can still influence the main flow: it receives the conversation history and may answer with a **prune decision** — a list of tool calls to drop and tool results to truncate, applied before compaction decides whether a summary is still needed. Everything else about the event (fail-open behaviour, timeout, working directory) stays the same.
+
+The payload adds the following fields on top of the base fields:
+
+| Field | Description |
+| --- | --- |
+| `trigger` | `manual` or `auto` |
+| `token_count` | Estimated tokens of the current context |
+| `agent_id` | Id of the agent whose context is about to be compacted |
+| `max_context_tokens` | Effective context window of the current model |
+| `instruction` | Free text passed to `/compact`; absent when none was given |
+| `messages` | The current context, oldest first; one entry per message |
+
+Each entry in `messages` has `index` (position in the context), `role` (`system`, `user`, `assistant`, or `tool`), `origin_kind` (the message origin when present), `text` (text parts only; thinking parts are excluded; capped at 200 000 characters with an omission note), `tool_calls` (assistant messages: array of `{ id, name, arguments }`, with `arguments` as the raw string), `tool_call_id` (tool messages), `is_error`, and `chars` (length of `text`).
+
+On exit code 0, the hook may print a JSON decision on stdout:
+
+```json
+{
+  "hookSpecificOutput": {
+    "compactionDecision": "prune",
+    "prune": {
+      "dropCalls": ["call_1", "call_2"],
+      "truncateResults": [{ "toolCallId": "call_3", "headChars": 300 }],
+      "note": "kept 41/58 messages"
+    }
+  }
+}
+```
+
+- `dropCalls`: ids of tool calls whose call and its result are both removed from the context.
+- `truncateResults`: tool results cut to their first `headChars` characters, with an omission note appended.
+- `note`: optional one-line explanation shown to the user.
+
+A decision is honoured only when every id exists in the history and its tool result has already arrived, no id appears in both lists, and `headChars` is a non-negative integer. Invalid decisions are ignored — the reason is logged — and compaction proceeds with the built-in behaviour. When several `PreCompact` hooks match, the first valid decision in configuration order wins and the rest are ignored. Empty stdout, `compactionDecision: "proceed"`, malformed JSON, or exit code 2 all mean "no prune": compaction runs exactly as it would without the hook.
+
+::: warning Note
+A prune never rewrites user or assistant text; it only removes tool calls and truncates tool results. The model can re-run a pruned tool when it needs the data again.
+:::
 
 ## Example: Blocking Dangerous Shell Commands
 
