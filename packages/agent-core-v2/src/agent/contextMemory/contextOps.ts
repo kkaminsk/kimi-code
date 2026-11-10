@@ -15,6 +15,7 @@ import {
   ContextAppendLoopEvent,
   ContextAppendMessage,
   ContextApplyCompaction,
+  ContextApplyPrune,
   ContextClear,
   type ContextApplyCompactionPayload,
 } from './contextEvents';
@@ -104,7 +105,8 @@ export const contextMemoryKey = defineState('contextMemory', (): ContextMessage[
       readContextCompactionShapeInput(e as unknown as ContextApplyCompactionPayload),
     );
     return resetFold([...result.messages]) as ContextMessage[];
-  });
+  })
+  .on(ContextApplyPrune, (s, e) => applyPruneRecord(s, e as unknown as PruneRecordShape) as ContextMessage[]);
 
 export function popSwarmModeReminder(state: ContextMessage[]): ContextMessage[] {
   const last = state.at(-1);
@@ -124,6 +126,88 @@ export function applyContextCompactionRecord(
 ): ContextMessage[] {
   const result = buildContextCompactionShape(state, readContextCompactionShapeInput(record));
   return resetFold([...result.messages]) as ContextMessage[];
+}
+
+export interface PruneRecordShape {
+  readonly dropCalls?: readonly string[];
+  readonly truncateResults?: readonly {
+    readonly toolCallId: string;
+    readonly headChars: number;
+  }[];
+}
+
+export function applyPruneRecord(
+  state: readonly ContextMessage[],
+  record: PruneRecordShape,
+): ContextMessage[] {
+  const dropCalls = record.dropCalls ?? [];
+  const truncateResults = record.truncateResults ?? [];
+  if (dropCalls.length === 0 && truncateResults.length === 0) return [...state];
+
+  const callIds = new Set<string>();
+  for (const message of state) {
+    if (message.role !== 'assistant') continue;
+    for (const call of message.toolCalls) {
+      callIds.add(call.id);
+    }
+  }
+  for (const id of dropCalls) {
+    if (!callIds.has(id)) {
+      throw new Error2(
+        ErrorCodes.STORAGE_DECODE_FAILED,
+        `Invalid context.apply_prune record: unknown tool call id "${id}"`,
+      );
+    }
+  }
+  const truncateById = new Map<string, number>();
+  for (const truncate of truncateResults) {
+    if (!callIds.has(truncate.toolCallId)) {
+      throw new Error2(
+        ErrorCodes.STORAGE_DECODE_FAILED,
+        `Invalid context.apply_prune record: unknown tool call id "${truncate.toolCallId}"`,
+      );
+    }
+    truncateById.set(truncate.toolCallId, truncate.headChars);
+  }
+
+  const dropSet = new Set(dropCalls);
+  const result: ContextMessage[] = [];
+  for (const message of state) {
+    if (message.role === 'tool' && message.toolCallId !== undefined) {
+      if (dropSet.has(message.toolCallId)) continue;
+      const headChars = truncateById.get(message.toolCallId);
+      if (headChars !== undefined) {
+        const text = textOf(message);
+        if (text.length > headChars) {
+          const omitted = text.length - headChars;
+          result.push({
+            ...message,
+            content: [
+              {
+                type: 'text',
+                text: `${text.slice(0, headChars)}\n[… ${String(omitted)} chars omitted by prune; re-run the tool if needed …]`,
+              },
+            ],
+          });
+          continue;
+        }
+      }
+      result.push(message);
+      continue;
+    }
+    if (message.role === 'assistant') {
+      const keptCalls = message.toolCalls.filter((call) => !dropSet.has(call.id));
+      if (keptCalls.length === message.toolCalls.length) {
+        result.push(message);
+        continue;
+      }
+      if (keptCalls.length === 0 && textOf(message).length === 0) continue;
+      result.push({ ...message, toolCalls: keptCalls });
+      continue;
+    }
+    result.push(message);
+  }
+  return result;
 }
 
 export function readContextCompactionShapeInput(

@@ -4,8 +4,10 @@ import {
   IAgentContextMemoryService,
   type ContextCompactionInput,
   type ContextCompactionResult,
+  type ContextPruneInput,
+  type ContextPruneResult,
 } from '#/agent/contextMemory/contextMemory';
-import { computeUndoCut, type UndoCut } from '#/agent/contextMemory/contextOps';
+import { applyPruneRecord, computeUndoCut, type UndoCut } from '#/agent/contextMemory/contextOps';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
 import type { LoopRecordedEvent } from '#/agent/contextMemory/loopEventFold';
 import type { ContextMessage } from '#/agent/contextMemory/types';
@@ -90,6 +92,15 @@ export function stubContextMemory(eventBus?: IEventBus): StubContextMemory {
       void _messages;
       return result;
     },
+    applyPrune: (input: ContextPruneInput): ContextPruneResult => {
+      const pruned = applyPruneRecord(messages, input);
+      const previousLength = messages.length;
+      const removedCount = previousLength - pruned.length;
+      messages.splice(0, previousLength, ...pruned);
+      if (previousLength > 0) revision += 1;
+      publishSplice(eventBus, { start: 0, deleteCount: previousLength, messages: [...pruned] });
+      return { tokensBefore: 0, tokensAfter: 0, removedCount };
+    },
   };
 }
 
@@ -119,6 +130,9 @@ class StubContextMemoryService implements IAgentContextMemoryService {
   }
   applyCompaction(input: ContextCompactionInput): ContextCompactionResult {
     return this.impl.applyCompaction(input);
+  }
+  applyPrune(input: ContextPruneInput): ContextPruneResult {
+    return this.impl.applyPrune(input);
   }
   prefixRevision(): number {
     return this.impl.prefixRevision();

@@ -538,6 +538,33 @@ export const WIRE_RENDERERS: RendererMap = {
     headline: () => ({ main: <Dim>context cleared</Dim> }),
   },
 
+  'context.apply_prune': {
+    tone: 'info',
+    label: 'prune',
+    headline: (r) => {
+      const record = r as unknown as UnknownObject;
+      const dropCalls = Array.isArray(record.dropCalls) ? record.dropCalls.length : 0;
+      const truncateResults = Array.isArray(record.truncateResults)
+        ? record.truncateResults.length
+        : 0;
+      return {
+        main: (
+          <span className="flex items-center gap-2">
+            <Pill tone="info" variant="soft">
+              pruned
+            </Pill>
+            <Dim>
+              {dropCalls} call{dropCalls === 1 ? '' : 's'} dropped · {truncateResults} result
+              {truncateResults === 1 ? '' : 's'} truncated ·{' '}
+              {optionalNumberValue(record.tokensBefore, '?')}→
+              {optionalNumberValue(record.tokensAfter, '?')} tok
+            </Dim>
+          </span>
+        ),
+      };
+    },
+  },
+
   'context.apply_compaction': {
     tone: 'compaction',
     label: 'compacted',

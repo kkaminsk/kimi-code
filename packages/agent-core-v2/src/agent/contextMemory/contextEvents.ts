@@ -97,6 +97,30 @@ export class ContextApplyCompaction extends AgentEvent2<ContextApplyCompactionPa
   static override readonly schema = contextApplyCompactionSchema;
 }
 
+const contextApplyPruneTruncateSchema = z.object({
+  toolCallId: z.string(),
+  headChars: z.number().int().nonnegative(),
+});
+
+const contextApplyPruneSchema = z.object({
+  agentId: z.string(),
+  dropCalls: z.array(z.string()),
+  truncateResults: z.array(contextApplyPruneTruncateSchema),
+  trigger: z.string(),
+  tokensBefore: z.number().optional(),
+  tokensAfter: z.number().optional(),
+  removedCount: z.number().int().nonnegative(),
+  note: z.string().optional(),
+});
+
+export type ContextApplyPrunePayload = z.infer<typeof contextApplyPruneSchema>;
+
+export class ContextApplyPrune extends AgentEvent2<ContextApplyPrunePayload> {
+  static override readonly type = 'context.apply_prune';
+  static override readonly durable = true;
+  static override readonly schema = contextApplyPruneSchema;
+}
+
 const contextUndoSchema = z.object({
   agentId: z.string(),
   count: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),

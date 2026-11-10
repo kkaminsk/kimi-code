@@ -64,6 +64,7 @@ const V1_RECORD_TYPES: ReadonlySet<string> = new Set([
   'context.append_loop_event',
   'context.clear',
   'context.apply_compaction',
+  'context.apply_prune',
   'context.undo',
   'goal.create',
   'goal.update',

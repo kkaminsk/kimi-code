@@ -23,6 +23,7 @@ const CONSUMED_TYPES = new Set([
   'context.append_message',
   'context.append_loop_event',
   'context.apply_compaction',
+  'context.apply_prune',
   'context.clear',
   'context.undo',
   'turn.prompt',
@@ -83,6 +84,22 @@ function passesValidation(record: V2WireRecord): boolean {
     }
     case 'context.apply_compaction':
       return isValidCompactionRecord(record);
+    case 'context.apply_prune': {
+      const dropCalls = record['dropCalls'];
+      const truncateResults = record['truncateResults'];
+      if (dropCalls !== undefined && !Array.isArray(dropCalls)) return false;
+      if (truncateResults === undefined) return true;
+      if (!Array.isArray(truncateResults)) return false;
+      return truncateResults.every(
+        (entry) =>
+          typeof entry === 'object' &&
+          entry !== null &&
+          typeof (entry as { readonly toolCallId?: unknown }).toolCallId === 'string' &&
+          typeof (entry as { readonly headChars?: unknown }).headChars === 'number' &&
+          Number.isInteger((entry as { readonly headChars?: unknown }).headChars) &&
+          ((entry as { readonly headChars?: unknown }).headChars as number) >= 0,
+      );
+    }
     case 'turn.prompt': {
       const promptId = record['promptId'];
       return promptId === undefined || typeof promptId === 'string';

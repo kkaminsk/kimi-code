@@ -212,6 +212,66 @@ function replaceMessageText(message: V2ContextMessage, text: string): V2ContextM
   return { ...message, content: [{ type: 'text', text }], toolCalls: [] };
 }
 
+function applyPruneToMessages(
+  messages: readonly V2ContextMessage[],
+  record: V2WireRecord,
+): V2ContextMessage[] {
+  const rawDrops = record['dropCalls'];
+  const rawTruncates = record['truncateResults'];
+  const dropCalls = Array.isArray(rawDrops)
+    ? rawDrops.filter((id): id is string => typeof id === 'string')
+    : [];
+  const truncateResults = Array.isArray(rawTruncates)
+    ? rawTruncates.filter(
+        (entry): entry is { readonly toolCallId: string; readonly headChars: number } =>
+          typeof entry === 'object' &&
+          entry !== null &&
+          typeof (entry as { readonly toolCallId?: unknown }).toolCallId === 'string' &&
+          typeof (entry as { readonly headChars?: unknown }).headChars === 'number',
+      )
+    : [];
+  if (dropCalls.length === 0 && truncateResults.length === 0) return [...messages];
+  const dropSet = new Set(dropCalls);
+  const truncateById = new Map(truncateResults.map((entry) => [entry.toolCallId, entry.headChars]));
+  const result: V2ContextMessage[] = [];
+  for (const message of messages) {
+    if (message.role === 'tool' && message.toolCallId !== undefined) {
+      if (dropSet.has(message.toolCallId)) continue;
+      const headChars = truncateById.get(message.toolCallId);
+      if (headChars !== undefined) {
+        const text = extractText(message.content);
+        if (text.length > headChars) {
+          const omitted = text.length - headChars;
+          result.push({
+            ...message,
+            content: [
+              {
+                type: 'text',
+                text: `${text.slice(0, headChars)}\n[… ${String(omitted)} chars omitted by prune; re-run the tool if needed …]`,
+              },
+            ],
+          });
+          continue;
+        }
+      }
+      result.push(message);
+      continue;
+    }
+    if (message.role === 'assistant') {
+      const keptCalls = (message.toolCalls ?? []).filter((call) => !dropSet.has(call.id));
+      if (keptCalls.length === (message.toolCalls ?? []).length) {
+        result.push(message);
+        continue;
+      }
+      if (keptCalls.length === 0 && extractText(message.content).length === 0) continue;
+      result.push({ ...message, toolCalls: keptCalls });
+      continue;
+    }
+    result.push(message);
+  }
+  return result;
+}
+
 function wrapSystemReminder(content: string): string {
   return `<system-reminder>\n${content.trim()}\n</system-reminder>`;
 }
@@ -610,6 +670,13 @@ export function foldV2WireRecords(records: readonly V2WireRecord[]): FoldedV2Age
         const compacted = buildCompactionMessages(messages, input);
         messages.length = 0;
         messages.push(...compacted);
+        resetFold();
+        break;
+      }
+      case 'context.apply_prune': {
+        const pruned = applyPruneToMessages(messages, record);
+        messages.length = 0;
+        messages.push(...pruned);
         resetFold();
         break;
       }

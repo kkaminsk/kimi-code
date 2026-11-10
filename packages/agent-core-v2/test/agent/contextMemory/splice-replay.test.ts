@@ -168,13 +168,13 @@ const noopTokenCounting: ISessionTokenCountingService = {
   estimateTools: () => 0,
 };
 
-function buildHost(key: string): Host {
+function buildHost(key: string, tokenCounting: ISessionTokenCountingService = noopTokenCounting): Host {
   const ix = disposables.add(new TestInstantiationService());
   ix.stub(IFileSystemStorageService, new InMemoryStorageService());
   ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
   ix.stub(IAgentBlobService, blob);
   ix.set(IEventBus, new SyncDescriptor(EventBusService));
-  ix.set(ISessionTokenCountingService, noopTokenCounting);
+  ix.set(ISessionTokenCountingService, tokenCounting);
   ix.set(IAgentContextMemoryService, new SyncDescriptor(AgentContextMemoryService));
   const wire = registerTestAgentWire(ix, testWireScope(SCOPE, key), {
     log: ix.get(IAppendLogStore),
@@ -578,4 +578,101 @@ describe('AgentContextMemoryService (wire-backed)', () => {
     expect(replay.agentState.get(contextMemoryKey)).toHaveLength(2);
   });
 
+});
+
+describe('AgentContextMemoryService applyPrune', () => {
+  function exchangeHistory(): ContextMessage[] {
+    return [
+      userMessage('read a and b'),
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'reading' }],
+        toolCalls: [
+          { type: 'function', id: 'c1', name: 'Read', arguments: '{"path":"a"}' },
+          { type: 'function', id: 'c2', name: 'Read', arguments: '{"path":"b"}' },
+        ],
+      },
+      { role: 'tool', content: [{ type: 'text', text: 'contents a' }], toolCalls: [], toolCallId: 'c1' },
+      {
+        role: 'tool',
+        content: [{ type: 'text', text: 'contents b are quite long' }],
+        toolCalls: [],
+        toolCallId: 'c2',
+      },
+    ];
+  }
+
+  it('prunes the live state, writes a durable record, and rebases the token count', async () => {
+    const rebases: { length: number; tokens: number }[] = [];
+    const counting: ISessionTokenCountingService = {
+      ...noopTokenCounting,
+      estimateMessage: () => 10,
+      estimateMessages: (messages) => messages.length * 10,
+      rebase: (_context, input) => {
+        rebases.push({ length: input.length, tokens: input.tokens });
+      },
+    };
+    const host = buildHost('ctx-prune', counting);
+    host.svc.append(...exchangeHistory());
+
+    const result = host.svc.applyPrune({
+      dropCalls: ['c1'],
+      truncateResults: [{ toolCallId: 'c2', headChars: 10 }],
+      trigger: 'manual',
+      note: 'kept 3/4',
+    });
+
+    expect(result).toEqual({ tokensBefore: 40, tokensAfter: 30, removedCount: 1 });
+    expect(rebases.at(-1)).toEqual({ length: 3, tokens: 30 });
+    expect(host.svc.prefixRevision()).toBe(1);
+
+    const history = host.svc.get();
+    expect(history.map((message) => message.role)).toEqual(['user', 'assistant', 'tool']);
+    expect(history[1]?.toolCalls.map((call) => call.id)).toEqual(['c2']);
+    expect(textOf(history[2]!)).toBe(
+      'contents b\n[… 15 chars omitted by prune; re-run the tool if needed …]',
+    );
+
+    await host.dispatcher.flush();
+    const records = await readRecords(host.log, 'ctx-prune');
+    expect(records.map((record) => record.type)).toContain('context.apply_prune');
+    expect(records.at(-1)).toEqual(
+      expect.objectContaining({
+        type: 'context.apply_prune',
+        dropCalls: ['c1'],
+        truncateResults: [{ toolCallId: 'c2', headChars: 10 }],
+        trigger: 'manual',
+        tokensBefore: 40,
+        tokensAfter: 30,
+        removedCount: 1,
+        note: 'kept 3/4',
+      }),
+    );
+  });
+
+  it('replays a pruned wire to the same messages the live service produced', async () => {
+    const live = buildHost('ctx-prune-live');
+    live.svc.append(...exchangeHistory());
+    live.svc.applyPrune({
+      dropCalls: ['c1'],
+      truncateResults: [{ toolCallId: 'c2', headChars: 10 }],
+      trigger: 'auto',
+    });
+    await live.dispatcher.flush();
+    const records = await readRecords(live.log, 'ctx-prune-live');
+
+    const replay = buildHost('ctx-prune-replay');
+    await restoreTestEventDispatcher(
+      replay.dispatcher,
+      replay.log,
+      testWireScope(SCOPE, 'ctx-prune-replay'),
+      records,
+    );
+
+    const liveHistory = live.svc.get();
+    const replayed = replay.agentState.get(contextMemoryKey);
+    expect(replayed.map((message) => message.role)).toEqual(liveHistory.map((message) => message.role));
+    expect(replayed.map(textOf)).toEqual(liveHistory.map((message) => textOf(message as never)));
+    expect(replayed[1]?.toolCalls.map((call) => call.id)).toEqual(['c2']);
+  });
 });

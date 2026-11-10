@@ -209,6 +209,26 @@ describe('AgentConversationUndoService', () => {
     }
   });
 
+  it('undoes across a prune without treating it as a boundary', async () => {
+    await setup();
+    const undo = ctx.get(IAgentConversationUndoService);
+    ctx.appendTurnExchange('first', 'answer one');
+    ctx.appendTurnExchange('second', 'answer two');
+    ctx.context.append(
+      {
+        role: 'assistant',
+        content: [],
+        toolCalls: [{ type: 'function', id: 'c1', name: 'Read', arguments: '{}' }],
+      },
+      { role: 'tool', content: [{ type: 'text', text: 'result' }], toolCalls: [], toolCallId: 'c1' },
+    );
+    ctx.context.applyPrune({ dropCalls: ['c1'], truncateResults: [], trigger: 'auto' });
+
+    expect(undo.availability()).toEqual({ maxTurns: 2, stoppedAtCompaction: false });
+    await undo.undo(2);
+    expect(ctx.context.get()).toHaveLength(0);
+  });
+
   it('refuses to cross a compaction boundary', async () => {
     await setup();
     const undo = ctx.get(IAgentConversationUndoService);

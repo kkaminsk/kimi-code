@@ -156,3 +156,5 @@ export interface AgentContextData {
   history: readonly ContextMessage[];
   tokenCount: number;
 }
+
+export type ContextPruneTrigger = 'manual' | 'auto';

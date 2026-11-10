@@ -309,6 +309,10 @@ class FakeContextMemory implements IAgentContextMemoryService {
     throw new Error('unused in this suite');
   }
 
+  applyPrune(): never {
+    throw new Error('unused in this suite');
+  }
+
   landAppended(): void {
     this.history.push(...this.appended);
     this.appended.length = 0;

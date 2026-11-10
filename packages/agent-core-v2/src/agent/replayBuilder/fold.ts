@@ -1,5 +1,6 @@
 import type { LoopRecordedEvent } from '#/agent/contextMemory/loopEventFold';
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import { applyPruneRecord, type PruneRecordShape } from '#/agent/contextMemory/contextOps';
 import type { CompactionResult } from '#/agent/fullCompaction/types';
 import type { PermissionApprovalResultRecord } from '#/agent/permissionRules/permissionRules';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
@@ -35,6 +36,7 @@ export const FOLD_RELEVANT_WIRE_TYPES: ReadonlySet<string> = new Set([
   'context.undo',
   'context.clear',
   'context.apply_compaction',
+  'context.apply_prune',
   'full_compaction.begin',
   'full_compaction.cancel',
   'goal.create',
@@ -134,6 +136,9 @@ class WireReplayFoldState {
         return;
       case 'context.apply_compaction':
         this.applyCompaction(record);
+        return;
+      case 'context.apply_prune':
+        this.applyPrune(record);
         return;
       case 'full_compaction.begin':
         this.push(
@@ -367,6 +372,13 @@ class WireReplayFoldState {
     }
   }
 
+  private applyPrune(record: WireRecord): void {
+    this.history = applyPruneRecord(this.history, readPruneShape(record)) as ContextMessage[];
+    this.openSteps.clear();
+    this.pendingToolResultIds.clear();
+    this.deferredMessages = [];
+  }
+
   private selectLegacyKeptTail(record: WireRecord): ContextMessage[] {
     if (
       readNumber(record, 'tokensAfter') !== undefined &&
@@ -546,6 +558,26 @@ function readString(record: WireRecord, key: string): string | undefined {
 function readNumber(record: WireRecord, key: string): number | undefined {
   const value = record[key];
   return typeof value === 'number' ? value : undefined;
+}
+
+function readPruneShape(record: WireRecord): PruneRecordShape {
+  const rawDrops = record['dropCalls'];
+  const rawTruncates = record['truncateResults'];
+  const dropCalls = Array.isArray(rawDrops)
+    ? rawDrops.filter((id): id is string => typeof id === 'string')
+    : [];
+  const truncateResults = Array.isArray(rawTruncates)
+    ? rawTruncates
+        .filter(
+          (entry): entry is { readonly toolCallId: string; readonly headChars: number } =>
+            typeof entry === 'object' &&
+            entry !== null &&
+            typeof (entry as { readonly toolCallId?: unknown }).toolCallId === 'string' &&
+            typeof (entry as { readonly headChars?: unknown }).headChars === 'number',
+        )
+        .map((entry) => ({ toolCallId: entry.toolCallId, headChars: entry.headChars }))
+    : [];
+  return { dropCalls, truncateResults };
 }
 
 function readCompactionSummary(record: WireRecord): string {

@@ -64,6 +64,73 @@ describe('Agent resume', () => {
     expect(persistence.records.filter((record) => record.type === 'metadata')).toHaveLength(1);
   });
 
+  it('resumes a session with a context.apply_prune record to the pruned messages', async () => {
+    const persistence = new RecordingAgentPersistence([
+      resumeConfigRecord(),
+      {
+        type: 'turn.prompt',
+        input: [{ type: 'text', text: 'read these files' }],
+        origin: { kind: 'user' },
+      } as unknown as WireRecord,
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'read these files' }],
+          toolCalls: [],
+          origin: { kind: 'user' },
+        },
+      } as unknown as WireRecord,
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', uuid: 's1', turnId: '0', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'tool.call',
+          uuid: 'x1',
+          turnId: '0',
+          step: 1,
+          stepUuid: 's1',
+          toolCallId: 'call_1',
+          name: 'Read',
+          args: { path: 'a.txt' },
+        },
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'tool.result',
+          parentUuid: 'x1',
+          toolCallId: 'call_1',
+          result: { output: 'contents of a.txt' },
+        },
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', uuid: 's1', turnId: '0', step: 1 },
+      },
+      {
+        type: 'context.apply_prune',
+        agentId: 'main',
+        dropCalls: ['call_1'],
+        truncateResults: [],
+        trigger: 'manual',
+        tokensBefore: 100,
+        tokensAfter: 40,
+        removedCount: 2,
+      },
+    ]);
+    const ctx = testAgent({ persistence, autoConfigure: false });
+
+    await ctx.restorePersisted();
+
+    const history = ctx.context.get();
+    expect(history.map((message) => message.role)).toEqual(['user']);
+    expect(history.some((message) => message.role === 'tool')).toBe(false);
+  });
+
   it('does not reconstruct an event-point interruption after restore', async () => {
     const persistence = new RecordingAgentPersistence([
       resumeConfigRecord(),

@@ -5,6 +5,7 @@ import {
   computeUndoCut,
   isFullyUndoable,
   readContextCompactionShapeInput,
+  applyPruneRecord,
 } from '@moonshot-ai/agent-core-v2/agent/contextMemory/contextOps';
 import { createLoopEventFold } from '@moonshot-ai/agent-core-v2/agent/contextMemory/loopEventFold';
 import { renderToolResultForModel } from '@moonshot-ai/agent-core-v2/agent/contextMemory/toolResultRender';
@@ -19,11 +20,13 @@ import type {
 export interface ProjectedMessage {
   lineNo: number;
   time?: number;
-  source: 'append_message' | 'compaction_summary' | 'undo' | 'clear';
+  source: 'append_message' | 'compaction_summary' | 'undo' | 'clear' | 'prune';
   message: ContextMessage;
   toolStepUuids: string[];
   /** Set only when source === 'undo'. */
   undo?: { count: number; removedMessageCount: number };
+  /** Set only when source === 'prune'. */
+  prune?: { droppedCalls: number; truncatedResults: number };
   /** Set only on the summary bubble of source === 'compaction_summary'.
    *  `tokensBefore`/`tokensAfter` are absent on legacy payload variants. */
   compaction?: { compactedCount: number; tokensBefore?: number; tokensAfter?: number };
@@ -432,6 +435,52 @@ export function projectContext(
       case 'plan_mode.cancel':
       case 'plan_mode.exit':
         planActive = false; planId = undefined; break;
+      case 'context.apply_prune': {
+        // Mirror the engine's applyPrune: dropped calls vanish from their
+        // assistant message together with the matching tool message, emptied
+        // assistant messages are removed, and truncated results keep a head
+        // plus the omission note. `modelMessages` tracks engine state in both
+        // modes; the visible removal only applies in 'model' mode, and both
+        // modes get a synthetic prune marker for the timeline.
+        fold.settle(rec.time);
+        const pruned = applyPruneRecord(
+          modelMessages.map((message) => message.message),
+          rec,
+        );
+        const byIdentity = new Map(modelMessages.map((message) => [message.message, message]));
+        modelMessages = pruned.map((message) => {
+          const previous = byIdentity.get(message);
+          if (previous !== undefined) return previous;
+          return {
+            lineNo: entry.lineNo - 0.001,
+            time: rec.time,
+            source: 'append_message' as const,
+            message: modelFacingMessage(message),
+            toolStepUuids: [],
+          };
+        });
+        resetFold();
+        if (mode === 'model') {
+          messages = [...modelMessages];
+          microCutoff = Math.min(microCutoff, modelMessages.length);
+        }
+        messages.push({
+          lineNo: entry.lineNo,
+          time: rec.time,
+          source: 'prune',
+          // Synthetic marker: never rendered as a bubble (the web dispatches
+          // on `source === 'prune'`). `role: 'assistant'` keeps it out of the
+          // `role: 'tool'` micro-compaction blanking gate.
+          message: { role: 'assistant', content: [], toolCalls: [] } as ContextMessage,
+          toolStepUuids: [],
+          prune: {
+            droppedCalls: rec.dropCalls.length,
+            truncatedResults: rec.truncateResults.length,
+          },
+        });
+        if (typeof rec.tokensAfter === 'number') contextTokens = rec.tokensAfter;
+        break;
+      }
       case 'context.undo': {
         // Mirror the engine's `undo`: locate the requested user anchor while
         // skipping injections, stop at a compaction summary, include an

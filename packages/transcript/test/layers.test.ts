@@ -1616,6 +1616,35 @@ describe('foldWireRecordFacts (cold facts)', () => {
     expect(folded.items).toBe(base.items);
   });
 
+  it('treats a context.apply_prune record as removed context, not an undo boundary', () => {
+    const userOne = {
+      type: 'context.append_message',
+      message: { role: 'user', content: [{ type: 'text', text: 'one' }], toolCalls: [], origin: { kind: 'user' } },
+      time: 1,
+    };
+    const userTwo = {
+      type: 'context.append_message',
+      message: { role: 'user', content: [{ type: 'text', text: 'two' }], toolCalls: [], origin: { kind: 'user' } },
+      time: 3,
+    };
+    const undoBoth = { type: 'context.undo', agentId: 'main', count: 2, time: 4 };
+    const prune = {
+      type: 'context.apply_prune',
+      agentId: 'main',
+      dropCalls: ['c1'],
+      truncateResults: [],
+      trigger: 'manual',
+      removedCount: 2,
+      time: 2,
+    };
+
+    const withoutPrune = foldWireRecordFacts([userOne, userTwo, undoBoth], baseWithMarker());
+    const withPrune = foldWireRecordFacts([userOne, prune, userTwo, undoBoth], baseWithMarker());
+
+    expect(withPrune).toEqual(withoutPrune);
+    expect(withPrune.items).toEqual(withoutPrune.items);
+  });
+
   it('folds todo records into the global todo document, last write wins', () => {
     const base = baseWithMarker();
     const folded = foldWireRecordFacts(

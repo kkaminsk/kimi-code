@@ -73,6 +73,7 @@ import type {
   ContextAppendLoopEvent,
   ContextAppendMessage,
   ContextApplyCompactionPayload,
+  ContextApplyPrunePayload,
   ContextClear,
   ContextUndo,
 } from '@moonshot-ai/agent-core-v2/agent/contextMemory/contextEvents';
@@ -167,6 +168,7 @@ export type AgentRecord =
   | WireRecordOf<'context.append_loop_event', ContextAppendLoopEvent>
   | WireRecordOf<'context.append_message', ContextAppendMessage>
   | WireRecordOf<'context.apply_compaction', ContextApplyCompactionPayload>
+  | WireRecordOf<'context.apply_prune', ContextApplyPrunePayload>
   | WireRecordOf<'context.clear', ContextClear>
   | WireRecordOf<'context.undo', ContextUndo>
   | WireRecordOf<'cron.add', CronAddPayload>

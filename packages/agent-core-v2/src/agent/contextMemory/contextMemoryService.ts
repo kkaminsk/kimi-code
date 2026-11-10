@@ -10,17 +10,20 @@ import {
   IAgentContextMemoryService,
   type ContextCompactionInput,
   type ContextCompactionResult,
+  type ContextPruneInput,
+  type ContextPruneResult,
 } from './contextMemory';
 import { buildContextCompactionShape, type TokenEstimate } from './compactionHandoff';
 import {
   ContextApplyCompaction,
+  ContextApplyPrune,
   ContextAppendLoopEvent,
   ContextAppendMessage,
   ContextClear,
   ContextSpliced,
   type ContextSplicedPayload,
 } from './contextEvents';
-import { contextMemoryKey } from './contextOps';
+import { applyPruneRecord, contextMemoryKey } from './contextOps';
 import type { LoopRecordedEvent } from './loopEventFold';
 import type { ContextMessage } from './types';
 
@@ -131,6 +134,41 @@ export class AgentContextMemoryService extends Disposable implements IAgentConte
     const { messages: _messages, ...publicResult } = result;
     void _messages;
     return publicResult;
+  }
+
+  applyPrune(input: ContextPruneInput): ContextPruneResult {
+    const history = this.get();
+    const tokensBefore = this.tokenCounting.estimateMessages(history);
+    const messages = applyPruneRecord(history, input);
+    const tokensAfter = this.tokenCounting.estimateMessages(messages);
+    const removedCount = history.length - messages.length;
+    void this.dispatcher.dispatch(
+      new ContextApplyPrune({
+        agentId: this.scopeContext.agentId,
+        dropCalls: [...input.dropCalls],
+        truncateResults: input.truncateResults.map((truncate) => ({
+          toolCallId: truncate.toolCallId,
+          headChars: truncate.headChars,
+        })),
+        trigger: input.trigger,
+        tokensBefore,
+        tokensAfter,
+        removedCount,
+        note: input.note,
+      }),
+    );
+    this.tokenCounting.rebase(this.scopeContext.agentContext, {
+      length: messages.length,
+      tokens: tokensAfter,
+      measured: false,
+    });
+    this.publishSplice({
+      start: 0,
+      deleteCount: history.length,
+      messages: [...messages],
+      tokens: tokensAfter,
+    });
+    return { tokensBefore, tokensAfter, removedCount };
   }
 
   private publishSplice(input: Omit<ContextSplicedPayload, 'agentId'>): void {

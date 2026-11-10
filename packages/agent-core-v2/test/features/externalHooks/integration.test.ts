@@ -19,7 +19,10 @@ import {
   IAgentContextMemoryService,
   type ContextCompactionInput,
   type ContextCompactionResult,
+  type ContextPruneInput,
+  type ContextPruneResult,
 } from '#/agent/contextMemory/contextMemory';
+import { applyPruneRecord } from '#/agent/contextMemory/contextOps';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import {
   HookDefSchema,
@@ -138,6 +141,12 @@ function stubContextMemory(): IAgentContextMemoryService & {
       const { messages: _messages, ...result } = shape;
       void _messages;
       return result;
+    },
+    applyPrune: (input: ContextPruneInput): ContextPruneResult => {
+      const pruned = applyPruneRecord(messages, input);
+      const removedCount = messages.length - pruned.length;
+      messages.splice(0, messages.length, ...pruned);
+      return { tokensBefore: 0, tokensAfter: 0, removedCount };
     },
     messages,
   };
@@ -1616,7 +1625,7 @@ describe('PreCompact prune contract', () => {
       await harness.ix.get(IAgentFullCompactionService).hooks.onWillCompact.run(task);
 
       const inputData = harness.triggerCalls[0]?.inputData ?? {};
-      expect(inputData.instruction).toBeUndefined();
+      expect(inputData['instruction']).toBeUndefined();
     } finally {
       harness.ix.dispose();
       disposables.dispose();

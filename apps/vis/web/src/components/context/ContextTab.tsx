@@ -5,6 +5,7 @@ import { useSession } from '../../hooks/useSession';
 import type { TokenUsage } from '../../types';
 import { Pill } from '../shared/Pill';
 import { ClearRibbon } from './ClearRibbon';
+import { PruneRibbon } from './PruneRibbon';
 import { CompactionRibbon } from './CompactionRibbon';
 import { MessageBubble } from './MessageBubble';
 import { UndoRibbon } from './UndoRibbon';
@@ -179,6 +180,9 @@ export function ContextTab({ sessionId, initialAgentId = 'main' }: ContextTabPro
               }
               if (m.source === 'clear') {
                 return <ClearRibbon key={m.lineNo} message={m} />;
+              }
+              if (m.source === 'prune') {
+                return <PruneRibbon key={m.lineNo} message={m} />;
               }
               return <MessageBubble key={m.lineNo} message={m} />;
             })

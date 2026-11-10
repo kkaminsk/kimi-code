@@ -563,6 +563,8 @@ export function foldWireRecordFacts(
         undoAnchorFloor = undoAnchors.length;
         break;
       }
+      case 'context.apply_prune':
+        break;
       case 'context.append_message': {
         const message = (record as ContextAppendMessagePayload).message;
         if (message?.role !== 'user' || !isUndoAnchorTurnOrigin(message.origin)) break;

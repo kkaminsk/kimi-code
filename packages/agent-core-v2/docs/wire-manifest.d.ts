@@ -24,11 +24,12 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (64 record types)
+// Index (65 record types)
 //   config.update                      profile                                               src/agent/profile/profileOps.ts
 //   context.append_loop_event          contextMemory, turn                                   src/agent/contextMemory/contextEvents.ts
 //   context.append_message             contextMemory, plan, task.notificationDelivery        src/agent/contextMemory/contextEvents.ts
 //   context.apply_compaction           contextMemory, plan, task.notificationDelivery, turn  src/agent/contextMemory/contextEvents.ts
+//   context.apply_prune                contextMemory                                         src/agent/contextMemory/contextEvents.ts
 //   context.clear                      contextMemory, plan, task.notificationDelivery, turn  src/agent/contextMemory/contextEvents.ts
 //   context.undo                       contextMemory, plan, task.notificationDelivery, turn  src/agent/contextMemory/contextEvents.ts
 //   cron.add                           (none)                                                src/features/cron/cronOps.ts
@@ -159,6 +160,25 @@ interface ContextAppendMessagePayload {
  * shared base: ...contextCompactionBaseShape
  */
 type ContextApplyCompactionPayload = { _name: 'context.apply_compaction'; } & ({ summary: string, compactedCount: number, contextSummary?: string } | { contextSummary: string, compactedCount: number, summary?: string } | { summary: ContextMessage, count: number, compactedCount?: number });
+
+/**
+ * states: contextMemory · blobs: contextMemory
+ * owner: src/agent/contextMemory/contextEvents.ts
+ */
+interface ContextApplyPrunePayload {
+  _name: 'context.apply_prune';
+  agentId: string;
+  dropCalls: string[];
+  truncateResults: {
+    toolCallId: string;
+    headChars: number;
+  }[];
+  trigger: string;
+  tokensBefore?: number;
+  tokensAfter?: number;
+  removedCount: number;
+  note?: string;
+}
 
 /**
  * states: contextMemory, plan, task.notificationDelivery, turn · blobs: contextMemory
@@ -963,6 +983,7 @@ interface WirePayloadMap {
   "context.append_loop_event": ContextAppendLoopEventPayload;
   "context.append_message": ContextAppendMessagePayload;
   "context.apply_compaction": ContextApplyCompactionPayload;
+  "context.apply_prune": ContextApplyPrunePayload;
   "context.clear": ContextClearPayload;
   "context.undo": ContextUndoPayload;
   "cron.add": CronAddPayload;

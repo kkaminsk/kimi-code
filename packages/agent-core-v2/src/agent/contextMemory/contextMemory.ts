@@ -2,7 +2,25 @@ import { createDecorator } from "#/_base/di/instantiation";
 import type { WireLineRange } from '#/wire/record';
 
 import type { LoopRecordedEvent } from './loopEventFold';
-import type { ContextMessage } from './types';
+import type { ContextMessage, ContextPruneTrigger } from './types';
+
+export interface ContextPruneTruncateInput {
+  readonly toolCallId: string;
+  readonly headChars: number;
+}
+
+export interface ContextPruneInput {
+  readonly dropCalls: readonly string[];
+  readonly truncateResults: readonly ContextPruneTruncateInput[];
+  readonly note?: string;
+  readonly trigger: ContextPruneTrigger;
+}
+
+export interface ContextPruneResult {
+  readonly tokensBefore: number;
+  readonly tokensAfter: number;
+  readonly removedCount: number;
+}
 
 export interface ContextCompactionInput {
   readonly summary: string;
@@ -45,6 +63,8 @@ export interface IAgentContextMemoryService {
   clear(): void;
 
   applyCompaction(input: ContextCompactionInput): ContextCompactionResult;
+
+  applyPrune(input: ContextPruneInput): ContextPruneResult;
 }
 
 export const IAgentContextMemoryService = createDecorator<IAgentContextMemoryService>('agentContextMemoryService');

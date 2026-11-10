@@ -129,6 +129,132 @@ describe('context-projector', () => {
     ]);
   });
 
+  it('projects a context.apply_prune record into a pruned model context and a prune marker', () => {
+    const entries = [
+      {
+        lineNo: 2,
+        data: {
+          type: 'context.append_message' as const,
+          message: {
+            role: 'user' as const,
+            content: [{ type: 'text' as const, text: 'list files' }],
+            toolCalls: [],
+          },
+        },
+        raw: {},
+      },
+      {
+        lineNo: 3,
+        data: {
+          type: 'context.append_loop_event' as const,
+          event: { type: 'step.begin' as const, uuid: 's1', turnId: 't1', step: 0 },
+        },
+        raw: {},
+      },
+      {
+        lineNo: 4,
+        data: {
+          type: 'context.append_loop_event' as const,
+          event: {
+            type: 'tool.call' as const,
+            uuid: 'x1',
+            turnId: 't1',
+            step: 0,
+            stepUuid: 's1',
+            toolCallId: 'call_1',
+            name: 'LS',
+            args: { path: '/' },
+          },
+        },
+        raw: {},
+      },
+      {
+        lineNo: 5,
+        data: {
+          type: 'context.append_loop_event' as const,
+          event: {
+            type: 'tool.call' as const,
+            uuid: 'x2',
+            turnId: 't1',
+            step: 0,
+            stepUuid: 's1',
+            toolCallId: 'call_2',
+            name: 'Read',
+            args: { path: '/a' },
+          },
+        },
+        raw: {},
+      },
+      {
+        lineNo: 6,
+        data: {
+          type: 'context.append_loop_event' as const,
+          event: {
+            type: 'tool.result' as const,
+            parentUuid: 'x1',
+            toolCallId: 'call_1',
+            result: { output: 'file1.txt\nfile2.txt' },
+          },
+        },
+        raw: {},
+      },
+      {
+        lineNo: 7,
+        data: {
+          type: 'context.append_loop_event' as const,
+          event: {
+            type: 'tool.result' as const,
+            parentUuid: 'x2',
+            toolCallId: 'call_2',
+            result: { output: 'x'.repeat(400) },
+          },
+        },
+        raw: {},
+      },
+      {
+        lineNo: 8,
+        data: {
+          type: 'context.apply_prune' as const,
+          agentId: 'main',
+          dropCalls: ['call_1'],
+          truncateResults: [{ toolCallId: 'call_2', headChars: 300 }],
+          trigger: 'manual',
+          tokensBefore: 100,
+          tokensAfter: 40,
+          removedCount: 1,
+        },
+        raw: {},
+      },
+    ];
+
+    const proj = projectContext(entries as any);
+
+    const pruneMarker = proj.messages.find((message) => message.source === 'prune');
+    expect(pruneMarker?.prune).toEqual({ droppedCalls: 1, truncatedResults: 1 });
+    expect(
+      proj.messages.some(
+        (message) =>
+          message.source === 'append_message' &&
+          message.message.role === 'tool' &&
+          message.message.toolCallId === 'call_1',
+      ),
+    ).toBe(false);
+    const assistant = proj.messages.find(
+      (message) => message.source === 'append_message' && message.message.role === 'assistant',
+    );
+    expect(assistant?.message.toolCalls.map((call) => call.id)).toEqual(['call_2']);
+    const keptTool = proj.messages.find(
+      (message) => message.source === 'append_message' && message.message.role === 'tool',
+    );
+    const keptText = keptTool?.message.content[0];
+    expect(keptText?.type).toBe('text');
+    if (keptText?.type === 'text') {
+      expect(
+        keptText.text.endsWith('\n[… 100 chars omitted by prune; re-run the tool if needed …]'),
+      ).toBe(true);
+    }
+  });
+
   it('drops a vacuous assistant when a step ends without output', () => {
     const entries = [
       { lineNo: 1, data: { type: 'context.append_loop_event' as const,

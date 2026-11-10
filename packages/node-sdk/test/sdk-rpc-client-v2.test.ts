@@ -854,6 +854,57 @@ key = "${titleOAuthRef.key}"
     }
   });
 
+  it('folds a wire containing a context.apply_prune record with unchanged message counts', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-prune-fold-'));
+    tempDirs.push(dir);
+    const wirePath = join(dir, 'wire.jsonl');
+    const baseRecords = [
+      {
+        type: 'context.append_message',
+        message: { role: 'user', content: [{ type: 'text', text: 'hi' }], toolCalls: [], origin: { kind: 'user' } },
+        time: 1,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'assistant',
+          content: [],
+          toolCalls: [{ type: 'function', id: 'c1', name: 'Read', arguments: '{}' }],
+        },
+        time: 2,
+      },
+      {
+        type: 'context.append_message',
+        message: { role: 'tool', content: [{ type: 'text', text: 'result' }], toolCalls: [], toolCallId: 'c1' },
+        time: 3,
+      },
+    ];
+    const pruneRecord = {
+      type: 'context.apply_prune',
+      agentId: 'main',
+      dropCalls: ['c1'],
+      truncateResults: [],
+      trigger: 'manual',
+      tokensBefore: 100,
+      tokensAfter: 40,
+      removedCount: 2,
+      time: 4,
+    };
+
+    await writeFile(wirePath, baseRecords.map((record) => JSON.stringify(record)).join('\n') + '\n');
+    const base = await foldAgentWireReplay(wirePath);
+    const baseMessages = base.replay.filter((record) => record.type === 'message').length;
+
+    await writeFile(
+      wirePath,
+      [...baseRecords, pruneRecord].map((record) => JSON.stringify(record)).join('\n') + '\n',
+    );
+    const pruned = await foldAgentWireReplay(wirePath);
+    const prunedMessages = pruned.replay.filter((record) => record.type === 'message').length;
+
+    expect(prunedMessages).toBe(baseMessages);
+  });
+
   it('rejects a resume whose engine restore fails without an unhandled rejection from the overlapped fold', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-resume-fail-'));
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));

@@ -9,6 +9,7 @@ import {
 } from './compactionHandoff';
 import { isPromptOwnedInjection, isUndoAnchor } from './conversationTime';
 import { createLoopEventFold, type LoopRecordedEvent } from './loopEventFold';
+import { applyPruneRecord, type PruneRecordShape } from './contextOps';
 import type { ContextMessage, ContextMessageTiming } from './types';
 
 export interface ContextTranscript {
@@ -152,6 +153,26 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
       case 'context.undo':
         applyUndo(record['count'] as number);
         break;
+      case 'context.apply_prune': {
+        fold.settle(record.time);
+        const pruned = applyPruneRecord(
+          transcript.map((entry) => entry.message as ContextMessage),
+          readPruneRecordShape(record),
+        );
+        const byIdentity = new Map(transcript.map((entry) => [entry.message, entry]));
+        transcript.length = 0;
+        foldedLength = 0;
+        for (const message of pruned) {
+          const previous = byIdentity.get(message as MutableMessage);
+          push(
+            previous !== undefined
+              ? previous
+              : { message: message as MutableMessage, time: record.time },
+          );
+        }
+        resetOpenState();
+        break;
+      }
       case 'context.clear':
         clearFloor = transcript.length;
         foldedLength = 0;
@@ -237,4 +258,24 @@ function textOfParts(content: readonly ContentPart[]): string {
 function readNumber(record: WireRecord, key: string): number | undefined {
   const value = record[key];
   return typeof value === 'number' ? value : undefined;
+}
+
+function readPruneRecordShape(record: WireRecord): PruneRecordShape {
+  const rawDrops = record['dropCalls'];
+  const rawTruncates = record['truncateResults'];
+  const dropCalls = Array.isArray(rawDrops)
+    ? rawDrops.filter((id): id is string => typeof id === 'string')
+    : [];
+  const truncateResults = Array.isArray(rawTruncates)
+    ? rawTruncates
+        .filter(
+          (entry): entry is { readonly toolCallId: string; readonly headChars: number } =>
+            typeof entry === 'object' &&
+            entry !== null &&
+            typeof (entry as { readonly toolCallId?: unknown }).toolCallId === 'string' &&
+            typeof (entry as { readonly headChars?: unknown }).headChars === 'number',
+        )
+        .map((entry) => ({ toolCallId: entry.toolCallId, headChars: entry.headChars }))
+    : [];
+  return { dropCalls, truncateResults };
 }
