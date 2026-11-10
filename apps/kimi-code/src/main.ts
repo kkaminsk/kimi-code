@@ -5,6 +5,9 @@
  * outer update preflight, then delegates to the requested UI runner.
  */
 
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import {
   createKimiHarness,
   flushDiagnosticLogs,
@@ -64,6 +67,7 @@ export async function handleMainCommand(
 ): Promise<MainCommandOutcome> {
   let validated: ReturnType<typeof validateOptions>;
   startupTrace('main:enter');
+  writeJevVersionMarker(version);
   try {
     validated = validateOptions(opts);
   } catch (error) {
@@ -300,6 +304,16 @@ function bootstrap(): void {
 }
 
 main();
+
+function writeJevVersionMarker(version: string): void {
+  try {
+    const markerDir = resolveKimiHome();
+    writeFileSync(join(markerDir, 'kimi-jev.version'), `${version}\n`, 'utf8');
+  } catch {
+    // Best-effort marker only; the plugin's doctor treats a missing marker as
+    // "stock Kimi", never as a crash.
+  }
+}
 
 async function logStartupFailure(operation: string, error: unknown): Promise<void> {
   log.error('startup failed', { operation, error });
