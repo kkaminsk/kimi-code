@@ -5,7 +5,9 @@
  *   - constructed on `compaction.started` → blinking white bullet +
  *     "Compacting context..." and optional custom instruction
  *   - `markDone()` on `compaction.completed` → solid green bullet +
- *     "Compaction complete (X → Y tokens)"
+ *     "Compaction complete (X → Y tokens)", or "Compacted (prune)" /
+ *     "Compacted (prune + summary)" with the dropped/truncated counts and
+ *     the hook note when the run pruned
  *   - `markCanceled()` on `compaction.cancelled` → solid warning bullet +
  *     "Compaction cancelled"
  *
@@ -21,6 +23,13 @@ import { currentTheme } from '#/tui/theme';
 
 const BLINK_INTERVAL = 500;
 
+export interface CompactionDoneDetails {
+  readonly mode: 'summary' | 'prune' | 'prune_then_summary';
+  readonly droppedCalls: number;
+  readonly truncatedResults: number;
+  readonly pruneNote?: string;
+}
+
 export class CompactionComponent extends Container {
   private readonly ui: TUI | undefined;
   private readonly headerText: Text;
@@ -34,6 +43,7 @@ export class CompactionComponent extends Container {
   private tokensBefore: number | undefined;
   private tokensAfter: number | undefined;
   private summary: string | undefined;
+  private details: CompactionDoneDetails | undefined;
   private summaryText: Text | undefined;
   private expanded = false;
 
@@ -86,12 +96,18 @@ export class CompactionComponent extends Container {
     super.invalidate();
   }
 
-  markDone(tokensBefore?: number, tokensAfter?: number, summary?: string): void {
+  markDone(
+    tokensBefore?: number,
+    tokensAfter?: number,
+    summary?: string,
+    details?: CompactionDoneDetails,
+  ): void {
     if (this.done || this.canceled) return;
     this.done = true;
     this.tokensBefore = tokensBefore;
     this.tokensAfter = tokensAfter;
     this.summary = summary;
+    this.details = details;
     this.stopBlink();
     this.headerText.setText(this.buildHeader());
     if (this.expanded) {
@@ -160,11 +176,24 @@ export class CompactionComponent extends Container {
   private buildHeader(): string {
     if (this.done) {
       const bullet = currentTheme.fg('success', STATUS_BULLET);
-      const label = currentTheme.boldFg('success', 'Compaction complete');
       const detail =
         this.tokensBefore !== undefined && this.tokensAfter !== undefined
           ? currentTheme.dim(` (${String(this.tokensBefore)} → ${String(this.tokensAfter)} tokens)`)
           : '';
+      if (this.details !== undefined && this.details.mode !== 'summary') {
+        const modeLabel =
+          this.details.mode === 'prune' ? 'Compacted (prune)' : 'Compacted (prune + summary)';
+        const label = currentTheme.boldFg('success', modeLabel);
+        const counts = currentTheme.dim(
+          `dropped ${String(this.details.droppedCalls)} tool call${this.details.droppedCalls === 1 ? '' : 's'}, truncated ${String(this.details.truncatedResults)} result${this.details.truncatedResults === 1 ? '' : 's'}`,
+        );
+        const note =
+          this.details.pruneNote !== undefined && this.details.pruneNote.length > 0
+            ? currentTheme.dim(` — ${this.details.pruneNote}`)
+            : '';
+        return `${bullet}${label} ${counts}${detail}${note}`;
+      }
+      const label = currentTheme.boldFg('success', 'Compaction complete');
       const shortcutHint =
         this.summary !== undefined && this.summary.length > 0
           ? currentTheme.dim(` (Ctrl-O to ${this.expanded ? 'hide' : 'show'} compaction summary)`)

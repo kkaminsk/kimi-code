@@ -47,4 +47,20 @@ describe('telemetry event registry', () => {
       agent_id: string;
     }>();
   });
+
+  it('documents the compaction mode, dropped calls, and truncated results on compaction_finished', () => {
+    const definition = telemetryEventDefinitions.compaction_finished;
+    expect(Object.keys(definition.meta.properties)).toEqual(
+      expect.arrayContaining(['mode', 'dropped_calls', 'truncated_results']),
+    );
+    expectTypeOf<
+      Pick<TelemetryEventProperties<'compaction_finished'>, 'mode'>
+    >().toEqualTypeOf<{ mode?: 'summary' | 'prune' | 'prune_then_summary' }>();
+    expectTypeOf<
+      Pick<TelemetryEventProperties<'compaction_finished'>, 'dropped_calls'>
+    >().toEqualTypeOf<{ dropped_calls?: number }>();
+    expectTypeOf<
+      Pick<TelemetryEventProperties<'compaction_finished'>, 'truncated_results'>
+    >().toEqualTypeOf<{ truncated_results?: number }>();
+  });
 });

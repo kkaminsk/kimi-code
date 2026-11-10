@@ -10,7 +10,12 @@ import {
 } from '#/agent/contextMemory/contextEvents';
 import type { WireLineRange } from '#/wire/record';
 
-import type { CompactionBeginData, CompactionResult, CompactionSource } from './types';
+import type {
+  CompactionBeginData,
+  CompactionMode,
+  CompactionResult,
+  CompactionSource,
+} from './types';
 
 export type CompactionPhase = 'idle' | 'running' | 'cancelled' | 'completed';
 
@@ -48,7 +53,12 @@ export interface FullCompactionCancel {
   readonly agentId: string;
 }
 
-const fullCompactionCompleteSchema = z.object({ agentId: z.string() });
+const fullCompactionCompleteSchema = z.object({
+  agentId: z.string(),
+  mode: z.enum(['summary', 'prune', 'prune_then_summary']).optional(),
+  droppedCalls: z.number().int().nonnegative().optional(),
+  truncatedResults: z.number().int().nonnegative().optional(),
+});
 
 export class FullCompactionComplete extends AgentEvent2<
   z.infer<typeof fullCompactionCompleteSchema>
@@ -59,6 +69,9 @@ export class FullCompactionComplete extends AgentEvent2<
 }
 export interface FullCompactionComplete {
   readonly agentId: string;
+  readonly mode?: CompactionMode;
+  readonly droppedCalls?: number;
+  readonly truncatedResults?: number;
 }
 
 export interface CompactionStartedPayload {

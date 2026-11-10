@@ -84,7 +84,9 @@ describe('fullCompaction ops (wire-backed)', () => {
     void dispatcher.dispatch(new FullCompactionBegin({ agentId: 'test-agent', source: 'manual', instruction: 'keep facts' }));
     expect(agentState.get(fullCompactionKey).phase).toBe('running');
 
-    void dispatcher.dispatch(new FullCompactionComplete({ agentId: 'test-agent' }));
+    void dispatcher.dispatch(
+      new FullCompactionComplete({ agentId: 'test-agent', mode: 'summary', droppedCalls: 0, truncatedResults: 0 }),
+    );
     expect(agentState.get(fullCompactionKey).phase).toBe('idle');
 
     void dispatcher.dispatch(new FullCompactionBegin({ agentId: 'test-agent', source: 'auto' }));
@@ -110,6 +112,9 @@ describe('fullCompaction ops (wire-backed)', () => {
     expect(records[1]).toEqual({
       type: 'full_compaction.complete',
       agentId: 'test-agent',
+      mode: 'summary',
+      droppedCalls: 0,
+      truncatedResults: 0,
       time: expect.any(Number),
     });
   });
@@ -128,7 +133,9 @@ describe('fullCompaction ops (wire-backed)', () => {
 
   it('replay rebuilds the phase silently', async () => {
     void dispatcher.dispatch(new FullCompactionBegin({ agentId: 'test-agent', source: 'manual' }));
-    void dispatcher.dispatch(new FullCompactionComplete({ agentId: 'test-agent' }));
+    void dispatcher.dispatch(
+      new FullCompactionComplete({ agentId: 'test-agent', mode: 'prune', droppedCalls: 2, truncatedResults: 1 }),
+    );
     const records = await readRecords();
 
     const host = buildHost('full-compaction-replay');

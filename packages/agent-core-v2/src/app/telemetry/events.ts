@@ -254,6 +254,9 @@ export interface CompactionFinishedEvent {
   input_cache_read?: number;
   input_cache_creation?: number;
   trace_id?: string;
+  mode?: 'summary' | 'prune' | 'prune_then_summary';
+  dropped_calls?: number;
+  truncated_results?: number;
 }
 
 export interface CompactionFailedEvent {
@@ -908,6 +911,9 @@ export const telemetryEventDefinitions = {
       input_cache_creation: 'Cache-creation input tokens',
       trace_id:
         'Trace id of the final compaction request round; absent for non-Kimi protocols',
+      mode: "How the compaction did its work: 'summary', 'prune', or 'prune_then_summary'",
+      dropped_calls: 'Tool calls dropped by a prune-mode compaction',
+      truncated_results: 'Tool results truncated by a prune-mode compaction',
     },
   }),
   compaction_failed: defineAgentTelemetryEvent<CompactionFailedEvent>({

@@ -166,6 +166,8 @@ On exit code 0, the hook may print a JSON decision on stdout:
 
 A decision is honoured only when every id exists in the history and its tool result has already arrived, no id appears in both lists, and `headChars` is a non-negative integer. Invalid decisions are ignored — the reason is logged — and compaction proceeds with the built-in behaviour. When several `PreCompact` hooks match, the first valid decision in configuration order wins and the rest are ignored. Empty stdout, `compactionDecision: "proceed"`, malformed JSON, or exit code 2 all mean "no prune": compaction runs exactly as it would without the hook.
 
+When a prune ran, the `PostCompact` payload reports what happened: `mode` is `summary`, `prune`, or `prune_then_summary`, and `dropped_calls` and `truncated_results` carry the counts alongside `estimated_token_count`.
+
 ::: warning Note
 A prune never rewrites user or assistant text; it only removes tool calls and truncates tool results. The model can re-run a pruned tool when it needs the data again.
 :::

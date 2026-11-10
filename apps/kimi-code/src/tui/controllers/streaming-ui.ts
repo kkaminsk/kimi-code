@@ -3,7 +3,7 @@ import type { Session } from '@moonshot-ai/kimi-code-sdk';
 import { AgentGroupComponent } from '../components/messages/agent-group';
 import { AssistantMessageComponent } from '../components/messages/assistant-message';
 import { currentWorkingTip } from '../components/chrome/working-tips';
-import { CompactionComponent } from '../components/dialogs/compaction';
+import { CompactionComponent, type CompactionDoneDetails } from '../components/dialogs/compaction';
 import { ReadGroupComponent } from '../components/messages/read-group';
 import { ThinkingComponent } from '../components/messages/thinking';
 import { ToolCallComponent } from '../components/messages/tool-call';
@@ -763,10 +763,15 @@ export class StreamingUIController {
     state.ui.requestRender();
   }
 
-  endCompaction(tokensBefore?: number, tokensAfter?: number, summary?: string): void {
+  endCompaction(
+    tokensBefore?: number,
+    tokensAfter?: number,
+    summary?: string,
+    details?: CompactionDoneDetails,
+  ): void {
     const block = this._activeCompactionBlock;
     if (block === undefined) return;
-    block.markDone(tokensBefore, tokensAfter, summary);
+    block.markDone(tokensBefore, tokensAfter, summary, details);
     this._activeCompactionBlock = undefined;
     this.host.state.ui.requestRender();
   }

@@ -52,6 +52,7 @@ import {
   type FullCompactionInput,
   type FullCompactionTask,
 } from './fullCompaction';
+import type { ValidatedPruneDecision } from '#/features/externalHooks/internal/types';
 import {
   RuntimeCompactionStrategy,
   type CompactionStrategy,
@@ -100,6 +101,13 @@ interface CompactionAttemptResult {
   readonly summary: string;
   readonly usage: TokenUsage | null;
   readonly traceId?: string;
+}
+
+interface PruneStepOutcome {
+  readonly tokensAfter: number;
+  readonly droppedCalls: number;
+  readonly truncatedResults: number;
+  readonly note?: string;
 }
 
 class CompactionTruncatedError extends Error {
@@ -453,9 +461,16 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     return true;
   }
 
-  private markCompleted(active: ActiveCompaction): boolean {
+  private markCompleted(active: ActiveCompaction, result: CompactionResult): boolean {
     if (this._compacting !== active) return false;
-    void this.dispatcher.dispatch(new FullCompactionComplete({ agentId: this.agent.agentId }));
+    void this.dispatcher.dispatch(
+      new FullCompactionComplete({
+        agentId: this.agent.agentId,
+        mode: result.mode,
+        droppedCalls: result.droppedCalls,
+        truncatedResults: result.truncatedResults,
+      }),
+    );
     this._compacting = null;
     return true;
   }
@@ -586,7 +601,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       const result = await this.compactionRound(active, data);
       if (this._compacting !== active) throw compactionCancelledReason(active);
       this.lastCompactedTokenCount = result.tokensAfter;
-      if (!this.markCompleted(active)) {
+      if (!this.markCompleted(active, result)) {
         throw compactionCancelledReason(active);
       }
       const { contextSummary: _contextSummary, ...eventResult } = result;
@@ -625,7 +640,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     data: Readonly<CompactionBeginData>,
   ): Promise<CompactionResult> {
     const startedAt = Date.now();
-    const originalHistory = [...this.context.get()];
+    let originalHistory = [...this.context.get()];
     const tokensBefore = this.requestTokens(originalHistory);
     let retryCount = 0;
     let thinkingEffort = this.profile.data().thinkingLevel;
@@ -635,6 +650,49 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       signal.throwIfAborted();
 
       await this.hooks.onWillCompact.run(active);
+
+      let pruneOutcome: PruneStepOutcome | undefined;
+      let pruneFallbackNote: string | undefined;
+      if (active.pruneDecision !== undefined) {
+        const outcome = this.runPruneStep(active, active.pruneDecision);
+        if (outcome !== undefined) {
+          pruneOutcome = outcome;
+        } else {
+          pruneFallbackNote = 'prune failed; fell back to summary compaction';
+        }
+      }
+
+      if (pruneOutcome !== undefined && !this.strategy.shouldBlock(pruneOutcome.tokensAfter)) {
+        const properties: CompactionFinishedEvent = {
+          turn_id: active.originTurnId,
+          source: data.source,
+          tokens_before: tokensBefore,
+          tokens_after: pruneOutcome.tokensAfter,
+          duration_ms: Date.now() - startedAt,
+          compacted_count: 0,
+          retry_count: 0,
+          round: 1,
+          thinking_effort: thinkingEffort,
+          mode: 'prune',
+          dropped_calls: pruneOutcome.droppedCalls,
+          truncated_results: pruneOutcome.truncatedResults,
+        };
+        this.telemetry.track2('compaction_finished', properties);
+        return {
+          summary: '',
+          compactedCount: 0,
+          tokensBefore,
+          tokensAfter: pruneOutcome.tokensAfter,
+          mode: 'prune',
+          droppedCalls: pruneOutcome.droppedCalls,
+          truncatedResults: pruneOutcome.truncatedResults,
+          pruneNote: pruneOutcome.note,
+        };
+      }
+
+      if (pruneOutcome !== undefined) {
+        originalHistory = [...this.context.get()];
+      }
 
       const resolvedModel = this.profile.resolveModelContext();
       thinkingEffort = resolvedModel.thinkingLevel;
@@ -764,7 +822,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       signal.throwIfAborted();
       const recoveryFooter = this.renderRecoveryFooter(wireLines);
       const summaryText = buildCompactionSummaryText(summary);
-      const result = this.context.applyCompaction({
+      const applied = this.context.applyCompaction({
         summary,
         contextSummary:
           recoveryFooter === undefined ? summaryText : `${summaryText}\n\n${recoveryFooter}`,
@@ -779,6 +837,13 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         droppedCount: droppedCount === 0 ? undefined : droppedCount,
         wireLines,
       });
+      const result: CompactionResult = {
+        ...applied,
+        mode: pruneOutcome === undefined ? 'summary' : 'prune_then_summary',
+        droppedCalls: pruneOutcome?.droppedCalls ?? 0,
+        truncatedResults: pruneOutcome?.truncatedResults ?? 0,
+        pruneNote: pruneOutcome?.note ?? pruneFallbackNote,
+      };
 
       const properties: CompactionFinishedEvent = {
         turn_id: active.originTurnId,
@@ -792,6 +857,9 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
         round: 1,
         thinking_effort: thinkingEffort,
         trace_id: attempt.traceId,
+        mode: result.mode,
+        dropped_calls: result.droppedCalls,
+        truncated_results: result.truncatedResults,
         ...usageTelemetry(attempt.usage),
       };
       this.telemetry.track2('compaction_finished', properties);
@@ -853,6 +921,31 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       return summary;
     }
     return `${summary.trim()}\n\n${renderTodoList(todos, '## TODO List')}`;
+  }
+
+  private runPruneStep(
+    active: ActiveCompaction,
+    decision: ValidatedPruneDecision,
+  ): PruneStepOutcome | undefined {
+    try {
+      active.abortController.signal.throwIfAborted();
+      this.context.applyPrune({
+        dropCalls: decision.dropCalls,
+        truncateResults: decision.truncateResults,
+        note: decision.note,
+        trigger: active.trigger,
+      });
+      active.abortController.signal.throwIfAborted();
+      return {
+        tokensAfter: this.requestTokens(this.context.get()),
+        droppedCalls: decision.dropCalls.length,
+        truncatedResults: decision.truncateResults.length,
+        note: decision.note,
+      };
+    } catch (error) {
+      onUnexpectedError(error);
+      return undefined;
+    }
   }
 
   private async captureWireLines(): Promise<WireLineRange | undefined> {

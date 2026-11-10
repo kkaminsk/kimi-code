@@ -56,8 +56,7 @@ describe('CompactionComponent', () => {
     }
   });
 
-  it('renders a cancelled terminal state', () => {
-    const component = new CompactionComponent();
+  it('renders a cancelled terminal state', () => {    const component = new CompactionComponent();
 
     try {
       component.markCanceled();
@@ -66,6 +65,47 @@ describe('CompactionComponent', () => {
 
       expect(text).toContain('Compaction cancelled');
       expect(text).not.toContain('Compacting context…');
+    } finally {
+      component.dispose();
+    }
+  });
+
+  it('renders prune mode with the dropped and truncated counts and the note', () => {
+    const component = new CompactionComponent();
+
+    try {
+      component.markDone(6_000, 3_000, '', {
+        mode: 'prune',
+        droppedCalls: 12,
+        truncatedResults: 5,
+        pruneNote: 'kept 41/58 messages',
+      });
+      const text = component.render(140).map(strip).join('\n');
+
+      expect(text).toContain('Compacted (prune)');
+      expect(text).toContain('dropped 12 tool calls, truncated 5 results');
+      expect(text).toContain('6000 → 3000 tokens');
+      expect(text).toContain('kept 41/58 messages');
+      expect(text).not.toContain('Compaction complete');
+    } finally {
+      component.dispose();
+    }
+  });
+
+  it('renders prune-then-summary mode with the counts', () => {
+    const component = new CompactionComponent();
+
+    try {
+      component.markDone(9_000, 2_000, 'A short summary.', {
+        mode: 'prune_then_summary',
+        droppedCalls: 3,
+        truncatedResults: 1,
+      });
+      const text = component.render(140).map(strip).join('\n');
+
+      expect(text).toContain('Compacted (prune + summary)');
+      expect(text).toContain('dropped 3 tool calls, truncated 1 result');
+      expect(text).not.toContain('Ctrl-O');
     } finally {
       component.dispose();
     }

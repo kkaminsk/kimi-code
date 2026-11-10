@@ -646,6 +646,10 @@ export class SessionReplayRenderer {
         tokensBefore: record.result.tokensBefore,
         tokensAfter: record.result.tokensAfter,
         instruction: record.instruction,
+        mode: record.result.mode,
+        droppedCalls: record.result.droppedCalls,
+        truncatedResults: record.result.truncatedResults,
+        pruneNote: record.result.pruneNote,
       },
     });
   }

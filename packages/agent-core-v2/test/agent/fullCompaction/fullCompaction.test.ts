@@ -271,7 +271,13 @@ describe('FullCompaction', () => {
       const candidate = event as { type?: unknown; event?: unknown };
       return candidate.type === '[wire]' && candidate.event === 'full_compaction.complete';
     });
-    expect(completeEvent?.args).toEqual({ agentId: 'main', time: '<time>' });
+    expect(completeEvent?.args).toEqual({
+      agentId: 'main',
+      mode: 'summary',
+      droppedCalls: 0,
+      truncatedResults: 0,
+      time: '<time>',
+    });
     expect(ctx.lastLlmInput()).toMatchInlineSnapshot(`
       system: <system-prompt>
       tools: Agent, AgentSwarm, CronCreate, CronDelete, CronList, EnterPlanMode, ExitPlanMode
@@ -317,6 +323,9 @@ describe('FullCompaction', () => {
         output_tokens: 8,
         input_cache_read: 0,
         input_cache_creation: 0,
+        mode: 'summary',
+        dropped_calls: 0,
+        truncated_results: 0,
       }),
     });
     await ctx.expectResumeMatches();
@@ -590,6 +599,9 @@ describe('FullCompaction', () => {
       cwd: dir,
       trigger: 'auto',
       estimated_token_count: ctx.contextData().tokenCount,
+      mode: 'summary',
+      dropped_calls: 0,
+      truncated_results: 0,
     });
   });
 
@@ -4457,5 +4469,171 @@ describe('FullCompaction pre-shrink', () => {
       }),
     );
     await ctx.expectResumeMatches();
+  });
+});
+
+describe('compaction prune orchestration', () => {
+  function seedToolExchange(ctx: ReturnType<typeof testAgent>, toolCallId: string, resultText: string): void {
+    ctx.appendTurnExchange('look at this file', 'reading it now');
+    ctx.context.append(
+      {
+        role: 'assistant',
+        content: [],
+        toolCalls: [{ type: 'function', id: toolCallId, name: 'Read', arguments: '{}' }],
+      },
+      { role: 'tool', content: [{ type: 'text', text: resultText }], toolCalls: [], toolCallId },
+    );
+  }
+
+  function compactionCompletedResult(events: readonly unknown[]): Record<string, unknown> {
+    const event = events.find((entry) => {
+      if (typeof entry !== 'object' || entry === null) return false;
+      const candidate = entry as { readonly type?: unknown; readonly event?: unknown };
+      return candidate.type === '[rpc]' && candidate.event === 'compaction.completed';
+    }) as { readonly args?: { readonly result?: Record<string, unknown> } } | undefined;
+    if (event?.args?.result === undefined) {
+      throw new Error('compaction.completed rpc event not found');
+    }
+    return event.args.result;
+  }
+
+  it('finishes in prune mode with no model request when the prune frees enough context', async () => {
+    const records: TelemetryRecord[] = [];
+    const ctx = testAgent({ telemetry: recordingTelemetry(records) });
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
+      tools: SNAPSHOT_VISIBLE_TOOLS,
+    });
+    seedToolExchange(ctx, 'c1', 'file contents');
+
+    const service = ctx.get(IAgentFullCompactionService);
+    const hook = service.hooks.onWillCompact.register('test-prune', async (task, next) => {
+      task.pruneDecision = { dropCalls: ['c1'], truncateResults: [], note: 'kept 2/4' };
+      await next();
+    });
+    const completed = ctx.once('compaction.completed');
+
+    expect(service.begin({ source: 'manual' })).toBe(true);
+    await completed;
+    hook.dispose();
+
+    const events = ctx.newEvents();
+    const result = compactionCompletedResult(events);
+    expect(result).toEqual(
+      expect.objectContaining({
+        mode: 'prune',
+        droppedCalls: 1,
+        truncatedResults: 0,
+        summary: '',
+        pruneNote: 'kept 2/4',
+      }),
+    );
+    expect(ctx.context.get().some((message) => message.role === 'tool')).toBe(false);
+    const finished = records.filter((record) => record.event === 'compaction_finished');
+    expect(finished).toHaveLength(1);
+    expect(finished[0]?.properties).toEqual(
+      expect.objectContaining({ mode: 'prune', dropped_calls: 1, truncated_results: 0 }),
+    );
+    expect(finished[0]?.properties).not.toHaveProperty('input_tokens');
+    expect(events.some((entry) => {
+      if (typeof entry !== 'object' || entry === null) return false;
+      const candidate = entry as { readonly event?: unknown };
+      return candidate.event === 'context.apply_compaction';
+    })).toBe(false);
+  });
+
+  it('falls through to one summary request over the pruned history when the prune is not enough', async () => {
+    const ctx = testAgent();
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: { ...CATALOGUED_MODEL_CAPABILITIES, max_context_tokens: 4_000 },
+      tools: SNAPSHOT_VISIBLE_TOOLS,
+    });
+    seedToolExchange(ctx, 'big1', 'x'.repeat(16_000));
+
+    const service = ctx.get(IAgentFullCompactionService);
+    const hook = service.hooks.onWillCompact.register('test-prune', async (task, next) => {
+      task.pruneDecision = { dropCalls: ['big1'], truncateResults: [] };
+      await next();
+    });
+    const completed = ctx.once('compaction.completed');
+
+    ctx.mockNextResponse({ type: 'text', text: 'Compacted summary.' });
+    expect(service.begin({ source: 'manual' })).toBe(true);
+    await completed;
+    hook.dispose();
+
+    const events = ctx.newEvents();
+    const result = compactionCompletedResult(events);
+    expect(result).toEqual(
+      expect.objectContaining({ mode: 'prune_then_summary', droppedCalls: 1, truncatedResults: 0 }),
+    );
+    expect(ctx.lastLlmInput()).not.toContain('xxxxxxxx');
+    const pruneIndex = events.findIndex((entry) => {
+      if (typeof entry !== 'object' || entry === null) return false;
+      return (entry as { readonly event?: unknown }).event === 'context.apply_prune';
+    });
+    const compactionIndex = events.findIndex((entry) => {
+      if (typeof entry !== 'object' || entry === null) return false;
+      return (entry as { readonly event?: unknown }).event === 'context.apply_compaction';
+    });
+    expect(pruneIndex).toBeGreaterThanOrEqual(0);
+    expect(compactionIndex).toBeGreaterThan(pruneIndex);
+  });
+
+  it('falls back to the summary path when applying the prune fails', async () => {
+    const ctx = testAgent();
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: { ...CATALOGUED_MODEL_CAPABILITIES, max_context_tokens: 4_000 },
+      tools: SNAPSHOT_VISIBLE_TOOLS,
+    });
+    seedToolExchange(ctx, 'c1', 'file contents');
+
+    const service = ctx.get(IAgentFullCompactionService);
+    const hook = service.hooks.onWillCompact.register('test-prune', async (task, next) => {
+      task.pruneDecision = { dropCalls: ['missing'], truncateResults: [] };
+      await next();
+    });
+    const completed = ctx.once('compaction.completed');
+
+    ctx.mockNextResponse({ type: 'text', text: 'Compacted summary.' });
+    expect(service.begin({ source: 'manual' })).toBe(true);
+    await completed;
+    hook.dispose();
+
+    const result = compactionCompletedResult(ctx.newEvents());
+    expect(result).toEqual(
+      expect.objectContaining({ mode: 'summary', droppedCalls: 0, truncatedResults: 0 }),
+    );
+    expect(String(result.pruneNote)).toContain('prune failed');
+  });
+
+  it('leaves the context unchanged when cancelled during the prune step', async () => {
+    const ctx = testAgent();
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
+      tools: SNAPSHOT_VISIBLE_TOOLS,
+    });
+    seedToolExchange(ctx, 'c1', 'file contents');
+
+    const service = ctx.get(IAgentFullCompactionService);
+    const hook = service.hooks.onWillCompact.register('test-prune-abort', async (task, next) => {
+      task.pruneDecision = { dropCalls: ['c1'], truncateResults: [] };
+      task.abortController.abort();
+      await next();
+    });
+    const cancelled = ctx.once('compaction.cancelled');
+
+    expect(service.begin({ source: 'manual' })).toBe(true);
+    await cancelled;
+    hook.dispose();
+
+    expect(
+      ctx.context.get().some((message) => message.role === 'tool' && message.toolCallId === 'c1'),
+    ).toBe(true);
+    expect(countEvents(ctx.newEvents(), 'context.apply_prune')).toBe(0);
   });
 });

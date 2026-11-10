@@ -233,6 +233,9 @@ describe('foldWireRecords', () => {
           keptUserMessageCount: 2,
           keptHeadUserMessageCount: 1,
           droppedCount: 1,
+          mode: 'summary',
+          droppedCalls: 0,
+          truncatedResults: 0,
         },
       },
     ]);

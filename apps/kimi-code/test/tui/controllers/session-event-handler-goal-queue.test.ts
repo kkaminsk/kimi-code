@@ -160,6 +160,9 @@ function compactionCompletedEvent() {
       tokensBefore: 100,
       tokensAfter: 10,
       compactedCount: 1,
+      mode: 'summary',
+      droppedCalls: 0,
+      truncatedResults: 0,
     },
   } as const;
 }

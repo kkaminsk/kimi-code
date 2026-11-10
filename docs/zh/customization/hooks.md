@@ -166,6 +166,8 @@ payload 在基础字段之上新增以下字段：
 
 只有当每个 id 都存在于历史中、其工具结果已经返回、没有 id 同时出现在两个列表中、且 `headChars` 是非负整数时，决策才会被采纳。无效决策会被忽略 —— 原因会写入日志 —— 压缩按内置行为继续。多个 `PreCompact` hook 同时匹配时，以配置顺序为准，第一个有效决策胜出，其余被忽略。空 stdout、`compactionDecision: "proceed"`、格式错误的 JSON 或退出码 2 都表示"不 prune"：压缩与不安装该 hook 时完全一致。
 
+prune 执行后，`PostCompact` payload 会报告结果：`mode` 为 `summary`、`prune` 或 `prune_then_summary`，`dropped_calls` 和 `truncated_results` 携带数量，连同 `estimated_token_count`。
+
 ::: warning 注意
 prune 永远不会改写用户或 assistant 的文本，只会移除工具调用、截断工具结果。模型需要数据时可以重新运行被 prune 的工具。
 :::

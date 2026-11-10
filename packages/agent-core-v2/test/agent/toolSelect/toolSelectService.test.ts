@@ -907,7 +907,15 @@ describe('AgentToolSelectService.load', () => {
     h.sut.load([MCP_ALPHA]);
     h.eventBus.publish(
       new CompactionCompleted({ agentId: 'main',
-        result: { summary: '', compactedCount: 0, tokensBefore: 0, tokensAfter: 0 },
+        result: {
+          summary: '',
+          compactedCount: 0,
+          tokensBefore: 0,
+          tokensAfter: 0,
+          mode: 'summary',
+          droppedCalls: 0,
+          truncatedResults: 0,
+        },
       }),
     );
     expect(h.sut.load([MCP_ALPHA]).toLoad).toEqual([MCP_ALPHA]);

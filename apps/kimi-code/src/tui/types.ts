@@ -183,6 +183,10 @@ export interface CompactionTranscriptData {
   readonly tokensBefore?: number;
   readonly tokensAfter?: number;
   readonly instruction?: string;
+  readonly mode?: 'summary' | 'prune' | 'prune_then_summary';
+  readonly droppedCalls?: number;
+  readonly truncatedResults?: number;
+  readonly pruneNote?: string;
 }
 
 export interface CronTranscriptData {

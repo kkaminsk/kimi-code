@@ -481,6 +481,9 @@ export class AgentExternalHooksService extends Service implements IAgentExternal
       {
         trigger: ctx.trigger,
         estimatedTokenCount: result.tokensAfter,
+        mode: result.mode,
+        dropped_calls: result.droppedCalls,
+        truncated_results: result.truncatedResults,
       },
       ctx.trigger,
     );

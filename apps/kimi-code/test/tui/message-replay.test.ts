@@ -1556,6 +1556,9 @@ describe('KimiTUI resume message replay', () => {
           compactedCount: 4,
           tokensBefore: 120,
           tokensAfter: 24,
+          mode: 'summary',
+          droppedCalls: 0,
+          truncatedResults: 0,
         },
         instruction: 'preserve implementation notes',
       },
@@ -1570,6 +1573,10 @@ describe('KimiTUI resume message replay', () => {
       tokensBefore: 120,
       tokensAfter: 24,
       instruction: 'preserve implementation notes',
+      mode: 'summary',
+      droppedCalls: 0,
+      truncatedResults: 0,
+      pruneNote: undefined,
     });
     const collapsed = stripAnsi(driver.state.transcriptContainer.render(120).join('\n'));
     expect(collapsed).toContain('Compaction complete');
@@ -1593,6 +1600,9 @@ describe('KimiTUI resume message replay', () => {
           compactedCount: 4,
           tokensBefore: 120,
           tokensAfter: 24,
+          mode: 'summary',
+          droppedCalls: 0,
+          truncatedResults: 0,
         },
       },
     ]);

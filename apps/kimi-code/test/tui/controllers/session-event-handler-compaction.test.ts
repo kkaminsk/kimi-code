@@ -71,7 +71,15 @@ const compactionCompleted = {
   type: 'compaction.completed',
   sessionId: 's1',
   agentId: 'main',
-  result: { summary: 'summary', tokensBefore: 100, tokensAfter: 10, compactedCount: 1 },
+  result: {
+    summary: 'summary',
+    tokensBefore: 100,
+    tokensAfter: 10,
+    compactedCount: 1,
+    mode: 'summary',
+    droppedCalls: 0,
+    truncatedResults: 0,
+  },
 } as const;
 
 const compactionCancelled = {

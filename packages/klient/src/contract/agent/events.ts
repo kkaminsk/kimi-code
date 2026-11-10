@@ -167,6 +167,10 @@ export const compactionCompletedEventSchema = z.object({
     keptUserMessageCount: z.number().optional(),
     keptHeadUserMessageCount: z.number().optional(),
     droppedCount: z.number().optional(),
+    mode: z.enum(['summary', 'prune', 'prune_then_summary']),
+    droppedCalls: z.number(),
+    truncatedResults: z.number(),
+    pruneNote: z.string().optional(),
   }),
 });
 

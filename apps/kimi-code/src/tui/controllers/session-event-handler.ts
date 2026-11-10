@@ -81,6 +81,7 @@ import type { SurveyController } from './survey-controller';
 import type { TasksBrowserController } from './tasks-browser';
 import { SubAgentEventHandler } from './subagent-event-handler';
 import { NotifyController } from './notify';
+import type { CompactionDoneDetails } from '../components/dialogs/compaction';
 import {
   sumTokenUsage,
   type AppState,
@@ -1156,6 +1157,7 @@ export class SessionEventHandler {
       event.result.tokensBefore,
       event.result.tokensAfter,
       event.result.summary,
+      compactionDoneDetails(event.result),
     );
     // A completed compaction just refreshed and shrank the cached context —
     // count it as activity so the next submit isn't judged against the
@@ -1318,4 +1320,13 @@ export class SessionEventHandler {
     state.footer.setBackgroundCounts({ bashTasks, agentTasks });
     state.ui.requestRender();
   }
+}
+
+function compactionDoneDetails(result: CompactionCompletedEvent['result']): CompactionDoneDetails {
+  return {
+    mode: result.mode,
+    droppedCalls: result.droppedCalls,
+    truncatedResults: result.truncatedResults,
+    pruneNote: result.pruneNote,
+  };
 }
